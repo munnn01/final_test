@@ -46,6 +46,17 @@ def test_scene_segments_have_stable_mapping_and_shared_coded_resolution():
     assert decoded.shape == rgb.shape
 
 
+def test_common_resolution_and_even_rounding_do_not_rescale_protected_samples():
+    rgb = pixels(2)
+    s = support(2)
+    s['cuts'][:] = True
+    s['protection'][1] = 0
+    s['protection'][1, 16:48, 16:48] = 1
+    grids = roi().build_grids(rgb.shape, s, factor=4, margin=0)
+    restored = roi().inverse_retarget(roi().retarget(rgb, grids), grids, rgb.shape)
+    np.testing.assert_array_equal(restored[s['protection'] == 1], rgb[s['protection'] == 1])
+
+
 def test_motion_alone_protects_roi_and_empty_or_full_support_skips_retarget():
     rgb = pixels()
     s = support()

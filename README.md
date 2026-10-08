@@ -1,5 +1,11 @@
 # Adaptive Video Preprocessing for VCM
 
+**V32, 2026-10-08:** mở rộng ROI simplification và retargeting nền factor2/4,
+khôi phục bằng grid truyền trong packet, tính cả overhead khi chọn luồng.
+Có thể kết hợp checkpoint V30-B frozen qua loader provenance gốc. Xem
+[các khối, đường dữ liệu và lệnh chạy V32](docs/V32_PROTOCOL.md).
+Không huấn luyện expert mới; chưa có benchmark BD-rate V32 trên dữ liệu thật.
+
 Bộ preprocessing V22–V29 cho **Action Recognition (AR)** và **Object Detection (OD)**,
 phát triển từ bài học V1–V21 và tài liệu [IEEE TCSVT, IEEE TIP, CVPR cùng các
 bài trong LAB](docs/RESEARCH_DESIGN.md). Mục tiêu: **BD-rate < −10% so với từng

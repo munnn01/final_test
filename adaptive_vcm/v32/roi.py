@@ -98,10 +98,19 @@ def build_grids(shape: tuple, support: dict, factor: int = 2, margin: float = .0
     ch = min(h, 2 * math.ceil(max(g.y_coded[-1] for g in raw) / 2))
     if (cw, ch) == (w, h):
         return None
-    def fit(axis, total):
-        return tuple(int(round(value * total / axis[-1])) for value in axis)
-    return tuple(Grid(g.start, g.stop, g.x_source, fit(g.x_coded, cw),
-                      g.y_source, fit(g.y_coded, ch)) for g in raw)
+    def fit(source, axis, total):
+        # Pay common resolution/even rounding by expanding only background.
+        # Scaling the entire grid would resample ROI cores at scene boundaries.
+        spare = np.diff(source) - np.diff(axis)
+        extra = total - axis[-1]
+        available = int(spare.sum())
+        if not extra:
+            return axis
+        cumulative = np.concatenate(([0], np.cumsum(spare)))
+        return tuple(value + int(round(extra * int(room) / available))
+                     for value, room in zip(axis, cumulative))
+    return tuple(Grid(g.start, g.stop, g.x_source, fit(g.x_source, g.x_coded, cw),
+                      g.y_source, fit(g.y_source, g.y_coded, ch)) for g in raw)
 
 
 def validate_grids(grids, source_shape, coded_shape):
