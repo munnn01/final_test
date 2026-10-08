@@ -4,9 +4,11 @@
 khôi phục bằng grid truyền trong packet, tính cả overhead khi chọn luồng.
 Có thể kết hợp checkpoint V30-B frozen qua loader provenance gốc. Xem
 [các khối, đường dữ liệu và lệnh chạy V32](docs/V32_PROTOCOL.md).
-Không huấn luyện expert mới; chưa có benchmark BD-rate V32 trên dữ liệu thật.
+Không huấn luyện expert mới; chưa có benchmark BD-rate V32 AR/OD trên dữ liệu thật.
 Đã thêm [object tracking MOT20 và notebook Kaggle](docs/V32_TRACKING.md):
 Hugging Face tải trực tiếp trong runtime, đánh giá HOTA/IDF1/MOTA bằng TrackEval.
+Screen MOT20-01 first32 đã COMPLETE: chọn identity, tiết kiệm0% byte.
+[Kiểm chứng V32](docs/V32_VERIFICATION.md): toàn bộ777 test pass; chưa xác nhận mục tiêu BD-rate.
 
 Bộ preprocessing V22–V29 cho **Action Recognition (AR)** và **Object Detection (OD)**,
 phát triển từ bài học V1–V21 và tài liệu [IEEE TCSVT, IEEE TIP, CVPR cùng các

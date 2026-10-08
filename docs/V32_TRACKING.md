@@ -73,8 +73,12 @@ common quality interval, are represented by null. `target_confirmed` remains
 false. A truncated sequence screen is not the full MOT20 benchmark; no
 bootstrap confidence is reported from a single short sequence. Dense crowds,
 COCO detector transfer, scale reduction, and last-box association can limit
-absolute tracking quality. Real dataset quality requires the Kaggle run; local
-analytic fixtures verify codec, continuity, and official metric interoperability.
+absolute tracking quality. The private Kaggle first32-frame MOT20-01 screen is
+complete: all50 paired points fall back to identity; selected byte saving is0%
+and HOTA/IDF1/MOTA equal the anchor. All160 edited candidates save>=1% bytes but
+fail required association preservation;146 also exceed relative distance0.03.
+See [verification and actual evidence paths](V32_VERIFICATION.md). Local analytic
+fixtures verify codec, continuity, and official metric interoperability.
 
 The association guard is conditional on the common decoded-anchor prefix. It
 does not guarantee teacher associations for every concatenated selected stream.
