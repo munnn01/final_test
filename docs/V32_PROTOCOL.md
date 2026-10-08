@@ -54,7 +54,7 @@ Mỗi arm chọn luồng nhỏ nhất qua cùng guard AR .1 / OD .03, giữ quy�
 
 ## Packet và byte
 
-VC32 có header40 byte gồm magic/version, task/codec/mode, geometry nguồn/coded, frame count, FPS rational, số đoạn, metadata/stream length và CRC32. Mỗi đoạn thêm8 byte và các trục source/coded uint16. Receiver xác thực chiều, coverage, thứ tự trục, CRC và độ dài rồi gọi FFmpeg chuẩn. Header chung được tính cho identity và controls. CRC phát hiện lỗi dữ liệu; nó không xác thực người gửi.
+VC32 có header40 byte gồm magic/version, task/codec/mode, geometry nguồn/coded, frame count, FPS rational, số đoạn, metadata/stream length và CRC32. Mỗi đoạn thêm8 byte và các trục source/coded uint16. Receiver xác thực chiều, coverage, thứ tự trục, CRC và độ dài rồi gọi FFmpeg chuẩn. Nó giới hạn buffer pixel có padding, số frame (cho phép phát hiện một frame thừa), dung lượng file đầu ra và kiểm tra kích thước từng frame thật trước khi đọc RGB vào bộ nhớ. Header chung được tính cho identity và controls. CRC phát hiện lỗi dữ liệu; nó không xác thực người gửi.
 
 `coded_bytes = elementary_bytes + metadata_bytes`, trong đó `metadata_bytes` gồm cả header. Selection và BD-rate dùng `coded_bytes`. Bpp luôn chia cho số pixel nguồn canonical `T*H*W`, không chia cho kích thước retarget nhỏ hơn. Không truyền mask nguồn như một side channel miễn phí.
 

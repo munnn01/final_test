@@ -46,12 +46,12 @@ def empty_output(path):
     return path
 
 
-def summarize(rows, ids, task, cfg, draws, meta=None, gt=None):
+def summarize(rows, ids, task, cfg, draws, meta=None, gt=None, *, has_baseline=False):
     """Refuse partial grids before fitting or bootstrapping any branch."""
     fingerprint(ids)
-    arms = sorted({r['arm'] for r in rows} - {'anchor'})
-    if not arms or 'v32' not in arms:
-        raise ValueError('missing V32 paired grid')
+    arms = ['controls', 'simplification', 'retarget', 'v32']
+    if has_baseline:
+        arms += ['v30b', 'hybrid']
     expected = {(i, c, q, a) for i in ids for c in cfg['codecs'] for q in cfg['qps'] for a in ['anchor', *arms]}
     keys = [(r['id'], r['codec'], r['qp'], r['arm']) for r in rows]
     if len(keys) != len(set(keys)) or set(keys) != expected:
@@ -182,7 +182,7 @@ def run(args):
     gt = _gt_scaled(meta, plan, geometry) if args.task == 'od' else None
     if gt is not None:
         write_json(out / 'ground_truth_scaled.json', {'gt': gt, 'categories': meta['categories']})
-    summary = summarize(rows, ids, args.task, cfg, draws, meta, gt)
+    summary = summarize(rows, ids, args.task, cfg, draws, meta, gt, has_baseline=baseline is not None)
     summary['scope'] = manifest['scope']
     write_json(out / 'summary.json', summary)
     manifest['status'] = 'complete'

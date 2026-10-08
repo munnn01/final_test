@@ -41,3 +41,55 @@ def test_plain_packet_uses_standard_decoder_without_roi_source_side_information(
     assert result.decoded.shape == rgb.shape
     assert result.metadata_bytes == 40
     assert np.max(np.abs(result.decoded.astype(int) - 128)) <= 2
+
+
+@pytest.mark.parametrize('actual_shape', [(4, 32, 32, 3), (1, 32, 128, 3)])
+def test_received_equal_byte_count_cannot_substitute_geometry_or_frame_count(actual_shape):
+    from adaptive_vcm.codec import StandardCodec
+    from adaptive_vcm.v32.codec import V32Codec
+    from adaptive_vcm.v32.transport import pack_packet
+    actual = np.full(actual_shape, 128, np.uint8)
+    stream = StandardCodec('h264', 40, preset='ultrafast').roundtrip(actual).data
+    wire = pack_packet(stream, task='od', codec='h264', source_shape=(1,64,64,3),
+                       coded_shape=(1,64,64,3), fps=Fraction(25))
+    with pytest.raises(ValueError, match='geometry|frames'):
+        V32Codec('h264', 40, preset='ultrafast').decode_packet(wire)
+
+
+def test_excess_receiver_output_is_bounded_before_reading_rgb_into_memory(monkeypatch):
+    import subprocess
+    from pathlib import Path
+    from adaptive_vcm.codec import StandardCodec
+    from adaptive_vcm.v32.codec import V32Codec
+    from adaptive_vcm.v32.transport import pack_packet
+    actual = np.full((40,32,32,3), 128, np.uint8)
+    stream = StandardCodec('h264', 40, preset='ultrafast').roundtrip(actual).data
+    wire = pack_packet(stream, task='od', codec='h264', source_shape=(1,32,32,3),
+                       coded_shape=(1,32,32,3), fps=Fraction(25))
+    real_run = subprocess.run
+    captured = []
+    def bounded_run(command, **kwargs):
+        assert kwargs['stdout'] != subprocess.PIPE, 'decoder must not buffer unbounded RGB stdout'
+        assert command[command.index('-frames:v')+1] == '2', 'one excess frame must remain detectable'
+        assert int(command[command.index('-max_pixels')+1]) <= 16384  # bounded codec alignment allowance
+        result = real_run(command, **kwargs)
+        captured.append(Path(command[-1]).stat().st_size)
+        return result
+    monkeypatch.setattr(subprocess, 'run', bounded_run)
+    with pytest.raises(ValueError, match='geometry|frames'):
+        V32Codec('h264', 40, preset='ultrafast').decode_packet(wire)
+    assert captured and max(captured) <= 2 * 32 * 32 * 3
+
+
+def test_resolution_change_inside_stream_is_rejected_before_reshaping():
+    import subprocess
+    from adaptive_vcm.codec import StandardCodec
+    from adaptive_vcm.v32.codec import V32Codec
+    from adaptive_vcm.v32.transport import pack_packet
+    encoder = StandardCodec('h264',40,preset='ultrafast')
+    a = encoder.roundtrip(np.full((1,32,32,3),128,np.uint8)).data
+    b = encoder.roundtrip(np.full((1,16,64,3),128,np.uint8)).data
+    wire = pack_packet(a+b,task='ot',codec='h264',source_shape=(2,32,32,3),
+                       coded_shape=(2,32,32,3),fps=Fraction(25))
+    with pytest.raises((ValueError,subprocess.CalledProcessError)):
+        V32Codec('h264',40,preset='ultrafast').decode_packet(wire)

@@ -4,7 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fractions import Fraction
 import hashlib
+from pathlib import Path
+import re
 import subprocess
+import tempfile
 import time
 
 import numpy as np
@@ -57,14 +60,29 @@ class V32Codec:
         if packet.codec != self.codec or packet.fps != self.fps:
             raise ValueError('V32 receiver codec/FPS mismatch')
         fmt = 'h264' if packet.codec == 'h264' else 'hevc'
-        command = [self.standard.ffmpeg, '-nostdin', '-v', 'error', '-xerror',
-                   '-err_detect', 'explode', '-threads', '2', '-f', fmt, '-i', 'pipe:0',
-                   '-vsync', '0', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1']
-        output = subprocess.run(command, input=packet.stream, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, check=True, timeout=self.standard.timeout).stdout
-        expected = int(np.prod(packet.coded_shape))
-        if len(output) != expected:
-            raise ValueError('VC32 decoded stream disagrees with transmitted geometry')
+        t, h, w, _ = packet.coded_shape
+        expected = t * h * w * 3
+        # libavcodec's max_pixels also covers aligned/padded frame buffers.
+        allocation_pixels = 4 * ((w + 63) // 64 * 64) * ((h + 63) // 64 * 64)
+        # Bound allocations before decode. One extra frame detects truncation;
+        # decoded RGB goes to a bounded file, never an unbounded stdout buffer.
+        with tempfile.TemporaryDirectory(prefix='v32-receiver-') as directory:
+            path = Path(directory) / 'received.rgb'
+            command = [self.standard.ffmpeg, '-nostdin', '-nostats', '-y', '-v', 'info', '-xerror',
+                '-max_alloc', str(max(16 * 1024 * 1024, h * w * 16)),
+                '-err_detect', 'explode', '-threads', '2', '-max_pixels', str(allocation_pixels),
+                '-f', fmt, '-i', 'pipe:0', '-vsync', '0', '-vf', 'showinfo',
+                '-frames:v', str(t + 1), '-fs', str(expected + h * w * 3),
+                '-f', 'rawvideo', '-pix_fmt', 'rgb24', str(path)]
+            result = subprocess.run(command, input=packet.stream, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, check=True, timeout=self.standard.timeout)
+            # showinfo runs before output autoscaling, including resolution changes.
+            actual = re.findall(rb'\[Parsed_showinfo_\d+ @ [^\]]+\]\s+n:\s*\d+[^\r\n]*?\s+s:(\d+)x(\d+)', result.stderr)
+            if len(actual) != t or any((int(aw), int(ah)) != (w, h) for aw, ah in actual):
+                raise ValueError('VC32 actual stream geometry/frames disagree with transmitted fields')
+            if path.stat().st_size != expected:
+                raise ValueError('VC32 decoded stream disagrees with transmitted geometry')
+            output = path.read_bytes()
         rgb = np.frombuffer(output, np.uint8).reshape(packet.coded_shape).copy()
         if packet.grids:
             rgb = inverse_retarget(rgb, packet.grids, packet.source_shape)

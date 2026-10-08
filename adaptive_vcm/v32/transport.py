@@ -14,7 +14,7 @@ HEADER_BYTES = _HEADER.size  # 40: common header is paid by every arm, including
 _SEGMENT = struct.Struct('>HHHH')
 MAX_PACKET_BYTES = 64 * 1024 * 1024
 MAX_PIXELS = 16 * 4096 * 4096
-TASKS = ('ar', 'od')
+TASKS = ('ar', 'od', 'ot')
 CODECS = ('h264', 'h265')
 
 
@@ -46,8 +46,8 @@ def _validate(task, codec, source_shape, coded_shape, fps, grids):
         raise ValueError('invalid VC32 grid container')
     if grids:
         validate_grids(grids, source_shape, coded_shape)
-    elif task == 'od' and source_shape != coded_shape:
-        raise ValueError('plain OD must retain canonical geometry')
+    elif task in ('od', 'ot') and source_shape != coded_shape:
+        raise ValueError('plain OD/OT must retain canonical geometry')
 
 
 def pack_packet(stream: bytes, *, task: str, codec: str, source_shape: tuple,

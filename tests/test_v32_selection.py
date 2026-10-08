@@ -113,3 +113,22 @@ def test_same_encoded_pixels_with_different_mapping_get_separate_receiver_and_te
     assert all(r['distinct_packet_decode'] for r in result.audit)
     assert teacher.calls == 3
     assert result.audit[1]['reconstructed_pixel_sha256'] != result.audit[2]['reconstructed_pixel_sha256']
+
+
+def test_tracking_packet_keeps_multiple_frames_and_calls_explicit_tracking_guard():
+    from adaptive_vcm.v32.transport import unpack_packet
+    rgb, s, cfg = pixels(2), support(2), config()
+    cfg['od_candidates'] = ['identity']
+    class TrackingTeacher:
+        def predict(self, clip):
+            return dict(scores=np.array([.9]), frames=[{} for _ in clip])
+    teacher, calls = TrackingTeacher(), []
+    def guard(task, clean, anchor, trial, config):
+        calls.append(task)
+        return (.02,), (True,)
+    result = selection().choose_stream(rgb, s['protection'].max(0), s, 'ot',
+        V32Codec('h264',40,preset='ultrafast'), cfg, [teacher], [teacher.predict(rgb)], guard=guard)
+    assert calls and set(calls) == {'ot'}
+    for packet, _ in result.arms.values():
+        assert unpack_packet(packet.data).task == 'ot'
+        assert packet.decoded.shape == rgb.shape

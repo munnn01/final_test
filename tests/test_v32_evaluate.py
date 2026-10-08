@@ -15,7 +15,7 @@ def records():
                  bpp=1. + (50-qp)*.01, correct={'r2plus1d_18': int(identifier == 'a')},
                  coded_bytes=1000 if arm == 'anchor' else 900, candidate='identity')
             for codec in ('h264', 'h265') for qp in (30, 35, 40, 45, 50)
-            for identifier in ('a', 'b') for arm in ('anchor', 'controls', 'v32')]
+            for identifier in ('a', 'b') for arm in ('anchor', 'controls', 'simplification', 'retarget', 'v32')]
 
 
 @pytest.mark.parametrize('alter', ['missing', 'duplicate', 'unknown', 'one_codec'])
@@ -38,7 +38,7 @@ def test_summary_keeps_each_arm_and_codec_separate_without_claiming_target():
     result = module().summarize(records(), ['a', 'b'], 'ar',
                                importlib.import_module('adaptive_vcm.v32.protocol').load_config(), 0)
     assert set(result['results']) == {'h264', 'h265'}
-    assert set(result['results']['h264']) == {'controls', 'v32'}
+    assert set(result['results']['h264']) == {'controls', 'simplification', 'retarget', 'v32'}
     assert result['target_confirmed'] is False
     assert result['results']['h264']['v32']['r2plus1d_18']['bd_rate_pct'] is None
 
@@ -109,3 +109,12 @@ def test_dataset_cli_contract_runs_all_qps_and_codecs_with_real_paid_packets(tmp
         assert len(wire) == row['coded_bytes'] == row['elementary_bytes'] + row['metadata_bytes']
         assert list(parsed.source_shape) == row['source_shape']
         assert row['bpp'] == 8 * len(wire) / (320 * 320)
+
+
+@pytest.mark.parametrize('arm', ['controls', 'simplification', 'retarget', 'v30b', 'hybrid'])
+def test_complete_grid_cannot_omit_an_entire_expected_comparison_arm(arm):
+    names = ['anchor', 'controls', 'simplification', 'retarget', 'v32', 'v30b', 'hybrid']
+    rows = [dict(r, arm=name) for r in records() if r['arm']=='anchor' for name in names if name != arm]
+    with pytest.raises(ValueError, match='grid'):
+        module().summarize(rows, ['a', 'b'], 'ar',
+            importlib.import_module('adaptive_vcm.v32.protocol').load_config(), 0, has_baseline=True)

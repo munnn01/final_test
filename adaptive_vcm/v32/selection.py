@@ -31,8 +31,9 @@ class Bundle:
 
 def build_candidates(rgb, protection, support, task, codec, cfg, baseline=None):
     validated_support(support, rgb.shape)
+    control_task = 'od' if task == 'ot' else task
     candidates = [Candidate(c.name, c.clip, 'controls') for c in
-                  make_candidates(rgb, protection, task, codec.qp, cfg[f'{task}_candidates'])]
+                  make_candidates(rgb, protection, control_task, codec.qp, cfg[f'{control_task}_candidates'])]
     learned = [] if baseline is None else baseline.proposals(rgb, support, codec)
     candidates.extend(Candidate(c.name, c.clip, 'learned') for c in learned)
     margin = cfg['roi']['margin']
@@ -65,10 +66,12 @@ def select_arms(rows, slack, min_savings, has_baseline):
     return result
 
 
-def choose_stream(rgb, protection, support, task, codec, cfg, teachers, source_predictions, baseline=None):
+def choose_stream(rgb, protection, support, task, codec, cfg, teachers, source_predictions, baseline=None, *, guard=None):
     start = time.perf_counter()
-    if task not in ('ar', 'od') or len(teachers) != (2 if task == 'ar' else 1):
+    if task not in ('ar', 'od', 'ot') or len(teachers) != (2 if task == 'ar' else 1):
         raise ValueError('V32 task/teacher count mismatch')
+    if task == 'ot' and (baseline is not None or guard is None):
+        raise ValueError('OT requires an explicit tracking guard and fixed-only scope')
     known = task == 'ar' or np.any(source_predictions[0]['scores'] >= cfg['od_score_threshold'])
     candidates = (build_candidates(rgb, protection, support, task, codec, cfg, baseline) if known
                   else [Candidate('identity', rgb.copy(), 'controls')])
@@ -101,7 +104,7 @@ def choose_stream(rgb, protection, support, task, codec, cfg, teachers, source_p
         elif decoded_key == (packets[0].decoded.shape, hashlib.sha256(packets[0].decoded.tobytes()).hexdigest()):
             distances, decisions = (0.,) * len(teachers), (True,) * len(teachers)
         else:
-            distances, decisions = relative_guard(task, source_predictions, anchor_predictions, predictions, cfg)
+            distances, decisions = (guard or relative_guard)(task, source_predictions, anchor_predictions, predictions, cfg)
         observation = Observation(candidate.name, packet.coded_bytes, distances, decisions)
         rows.append(dict(family=candidate.family, observation=observation))
         packets.append(packet)
