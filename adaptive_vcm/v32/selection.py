@@ -71,7 +71,7 @@ def select_arms(rows, slack, min_savings, has_baseline, *, extra_families=None):
 
 
 def choose_stream(rgb, protection, support, task, codec, cfg, teachers, source_predictions, baseline=None, *, guard=None,
-                  extra_candidates=(), extra_families=None):
+                  extra_candidates=(), extra_families=None, forced_names=None, unconditional_extra=False):
     start = time.perf_counter()
     if task not in ('ar', 'od', 'ot') or len(teachers) != (2 if task == 'ar' else 1):
         raise ValueError('V32 task/teacher count mismatch')
@@ -80,7 +80,7 @@ def choose_stream(rgb, protection, support, task, codec, cfg, teachers, source_p
     known = task == 'ar' or np.any(source_predictions[0]['scores'] >= cfg['od_score_threshold'])
     candidates = (build_candidates(rgb, protection, support, task, codec, cfg, baseline) if known
                   else [Candidate('identity', rgb.copy(), 'controls')])
-    if known:
+    if known or unconditional_extra:
         if any(c.family in {'controls', 'simplification', 'retarget', 'learned', 'hybrid'} for c in extra_candidates):
             raise ValueError('extension candidates cannot enter historical V32 families')
         candidates.extend(extra_candidates)
@@ -127,5 +127,10 @@ def choose_stream(rgb, protection, support, task, codec, cfg, teachers, source_p
             preserves_decision=list(decisions), encode_seconds=encoded.seconds if new_encode else 0.,
             receiver_seconds=packet.seconds if new_packet else 0.))
     indices = select_arms(rows, slack, cfg['min_savings'], baseline is not None, extra_families=extra_families)
+    for arm,name in (forced_names or {}).items():
+        matches=[i for i,c in enumerate(candidates) if c.name==name]
+        if len(matches)!=1 or arm not in (extra_families or {}):
+            raise ValueError('forced arm requires one explicit candidate and declared family')
+        indices[arm]=matches[0]
     return Bundle(packets[0], {arm: (packets[index], candidates[index].name) for arm, index in indices.items()},
                   audit, time.perf_counter() - start)

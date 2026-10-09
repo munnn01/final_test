@@ -96,7 +96,7 @@ def prepare_source(rgb, task, cfg, teachers):
     return protection, support, predictions
 
 
-def run(args):
+def run(args, *, extension=None, codec_factory=None):
     # Check this before expensive model initialization, including incomplete args.
     out = empty_output(args.out)
     cfg = load_config(args.config)
@@ -121,10 +121,15 @@ def run(args):
         vc_models = {arm: load_checkpoint(getattr(args, arm + '_checkpoint'), args.task, device) for arm in ('plain', 'joint')}
         validate_pair(vc_models)
         vc_families = EXTRA_FAMILIES
+    plugin=extension or {}
+    if plugin and vc_models: raise ValueError('only one evaluation extension allowed')
+    if plugin:
+        vc_models,vc_families=plugin['models'],plugin['families']
     if args.task == 'ar':
         plan, meta = ar_plan(args.root, args.split, args.count)
         teachers = [ActionAnalyzer(n, device) for n in cfg['ar_teachers']]
         evaluators = {n: next((t for t in teachers if t.name == n), None) or ActionAnalyzer(n, device) for n in cfg['ar_evaluators']}
+        if plugin.get('evaluators'): evaluators.update(plugin['evaluators'](device))
     else:
         if args.annotations is None:
             raise ValueError('COCO --annotations required')
@@ -147,6 +152,7 @@ def run(args):
     if vc_models:
         manifest.update(scope='v32vc_paired_extension', v32vc={a: m.manifest for a, m in vc_models.items()},
                         extra_arms=list(vc_families), comparison_limit='New FIT48/CAL16 versus historical V30-B TRAIN32; exploratory')
+    if plugin: manifest.update(plugin['manifest'])
     write_json(out / 'manifest.json', manifest)
     rows, geometry, audit = [], {}, SourceAudit()
     for position, item in enumerate(plan):
@@ -164,13 +170,13 @@ def run(args):
         preparation_seconds = time.perf_counter() - start
         for codec in cfg['codecs']:
             for qp in cfg['qps']:
-                actual_codec = V32Codec(codec, qp, cfg['preset'], Fraction(cfg['fps']))
-                extension, extension_seconds = {}, 0.
+                actual_codec = (codec_factory or V32Codec)(codec, qp, cfg['preset'], Fraction(cfg['fps']))
+                options, extension_seconds = {}, 0.
                 if vc_models:
                     from ..v32vc.evaluate import prepare_extension
-                    extension, extension_seconds = prepare_extension(rgb, support, actual_codec, vc_models, cfg)
+                    options, extension_seconds = plugin.get('prepare',prepare_extension)(rgb, support, actual_codec, vc_models, cfg)
                 bundle = choose_stream(rgb, protection, support, args.task,
-                    actual_codec, cfg, teachers, source_predictions, baseline, **extension)
+                    actual_codec, cfg, teachers, source_predictions, baseline, **options)
                 bundle.seconds += extension_seconds
                 extension_record = dict(extension_preparation_seconds=extension_seconds) if vc_models else {}
                 prediction_cache = {}
