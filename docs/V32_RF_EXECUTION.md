@@ -10,4 +10,6 @@ Pre-flight: bridge/feature/protocol feed train; train checkpoint wrappers feed e
 
 Ruling: Git Bash bookkeeping helper failed with NtCreateDirectoryObject access denied; native PowerShell ledger files provide the same bookkeeping. No product behavior changes.
 Task1 RED: missing v32rf module. GREEN: 39 passed (bridge, V32 codecs, VC model/training). Initial GREEN had four fixture setup errors because the explicit basetemp parent did not exist; created the workspace-local parent and reran successfully.
-Task1 complete; Task2 in progress; Task3 pending; Task4 pending; final fresh review pending. No new performance claim.
+Task2 RED: missing warm module. Initial GREEN: 26 passed, including actual torchvision OD task gradients, paired real/proxy steps and frozen feature state. Both original AR/OD plain checkpoints passed immutable warm-runtime validation locally.
+User extension: both frozen Video Swin AR evaluation and trained Video Swin-based restoration after decode, across available Kaggle accounts. Add a separate postprocessor experiment with identical paid streams; do not attribute changing task backbone to preprocessing gain. Receiver still decodes the standard stream independently; restoration is an explicitly additional learned operation.
+Task1 complete; Task2 completing; Task3 in progress; Task4 pending; Video Swin restoration task pending; final fresh review pending. No new performance claim.

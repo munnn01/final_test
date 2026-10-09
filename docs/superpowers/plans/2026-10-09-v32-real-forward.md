@@ -55,3 +55,10 @@ Interfaces: CLI with task/account/originalV30 checkpoint/runtime/warm checkpoint
 - [ ] Implement generator and runtime; run full affected GREEN suite; commit frozen source.
 - [ ] Fresh whole-branch review, one RED→GREEN fix pass for important findings, preserve source hashes.
 - [ ] Verify payloads/account quota, submit public AR/OD notebooks, save receipts and return links. Do not follow cloud execution; await user completion notice.
+
+## Task 5: User-authorized Video Swin restoration experiment
+
+Files: `adaptive_vcm/v32rf/{post,post_train,post_evaluate}.py`; `tests/test_v32rf_post.py`; extend public payload mode and docs.
+- [ ] RED tests for frozen Swin backbone and input/output geometry, zero-initialized identity, head gradients without teacher updates, bounded restoration, checkpoint integrity/overlap, identical paired bitstreams, official classifier transform.
+- [ ] GREEN implementation: frozen pretrained Swin feature backbone + trainable bounded RGB head; FIT48 real decoded RF-real inputs; LAST two epochs; all three AR evaluators; anchor/RF-real streams with/without restoration.
+- [ ] Separate AR post job repeats the fixed paired RF fit; archive both TRAIN and held-out restoration evidence. Review all changes together before final cloud submission.
