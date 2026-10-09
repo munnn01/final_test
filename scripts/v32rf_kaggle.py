@@ -3,8 +3,11 @@ import argparse
 import base64
 import hashlib
 import inspect
+import io
 import json
+import lzma
 from pathlib import Path
+import zipfile
 from scripts.v32_mot20_kaggle import source_snapshot,safe_extract
 from scripts.v32vc_kaggle import mount_data
 
@@ -110,15 +113,55 @@ finally:
 '''
 
 
+def pack_constants(job,origin,bundle,raw,warm_origin,warm_bundle,warm_raw):
+    # One dictionary spans both largely identical original archives. The ZIPs and
+    # checkpoints remain exact bytes; this changes transport, not their snapshots.
+    values={'source.zip':bundle,'warm.zip':warm_bundle,'baseline.pth':raw,'warm.pth':warm_raw,
+        'origin.json':json.dumps(origin,sort_keys=True).encode(),
+        'warm-origin.json':json.dumps(warm_origin,sort_keys=True).encode(),'job.json':json.dumps(job,sort_keys=True).encode()}
+    buffer=io.BytesIO()
+    with zipfile.ZipFile(buffer,'w',compression=zipfile.ZIP_STORED) as archive:
+        for name,value in values.items(): archive.writestr(zipfile.ZipInfo(name,date_time=(1980,1,1,0,0,0)),value)
+    return base64.b64encode(lzma.compress(buffer.getvalue(),preset=6)).decode()
+
+
+def unpack_constants(payload):
+    try:
+        decoder=lzma.LZMADecompressor(memlimit=64*1024*1024)
+        raw=decoder.decompress(base64.b64decode(payload,validate=True),max_length=4*1024*1024)
+        if not decoder.eof or decoder.unused_data: raise ValueError('incomplete/oversized transport')
+        names={'source.zip','warm.zip','baseline.pth','warm.pth','origin.json','warm-origin.json','job.json'}
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            entries=archive.infolist()
+            if (len(entries)!=7 or set(archive.namelist())!=names or
+                    any(e.compress_type!=zipfile.ZIP_STORED for e in entries) or sum(e.file_size for e in entries)>4*1024*1024):
+                raise ValueError('invalid transport member schema')
+            result={key:base64.b64encode(archive.read(name)).decode() for key,name in (
+                ('BUNDLE_BASE64','source.zip'),('WARM_BUNDLE_BASE64','warm.zip'),
+                ('CHECKPOINT_BASE64','baseline.pth'),('WARM_CHECKPOINT_BASE64','warm.pth'))}
+            result.update({key:json.loads(archive.read(name)) for key,name in (
+                ('ORIGIN','origin.json'),('WARM_ORIGIN','warm-origin.json'),('JOB','job.json'))})
+            return result
+    except (lzma.LZMAError,zipfile.BadZipFile,EOFError) as error:
+        raise ValueError('invalid packed RF transport') from error
+
+
+def serialized_source_bytes(notebook):
+    # Kaggle's official client joins source arrays and JSON-serializes again.
+    body=json.loads(json.dumps(notebook))
+    for cell in body['cells']: cell['source']=''.join(cell['source']) if isinstance(cell['source'],list) else cell['source']
+    return len(json.dumps(body).encode('utf-8'))
+
+
 def build_notebook(job,origin,bundle,raw,warm_origin,warm_bundle,warm_raw):
-    constants='import base64,hashlib,io,json,stat,subprocess,zipfile\nfrom pathlib import Path\n'
-    for name,value in [('BUNDLE_BASE64',base64.b64encode(bundle).decode()),('CHECKPOINT_BASE64',base64.b64encode(raw).decode()),
-            ('WARM_BUNDLE_BASE64',base64.b64encode(warm_bundle).decode()),('WARM_CHECKPOINT_BASE64',base64.b64encode(warm_raw).decode()),
-            ('ORIGIN',origin),('WARM_ORIGIN',warm_origin),('JOB',job)]: constants+=f'{name} = {value!r}\n'
+    packed=pack_constants(job,origin,bundle,raw,warm_origin,warm_bundle,warm_raw)
+    constants=('import base64,hashlib,io,json,lzma,stat,subprocess,zipfile\nfrom pathlib import Path\n'
+        f'PACKED_BASE64 = {packed!r}\n'+inspect.getsource(unpack_constants)+'\nglobals().update(unpack_constants(PACKED_BASE64))\n')
     sources=[constants,inspect.getsource(safe_extract)+'\n'+inspect.getsource(mount_data)+'\n'+RUNTIME]
     for source in sources: compile(source,'<notebook-cell>','exec')
     notebook=dict(cells=[dict(cell_type='code',id=f'cell-{i}',execution_count=None,metadata={},outputs=[],source=s.splitlines(keepends=True)) for i,s in enumerate(sources)],
         metadata={'kernelspec':{'display_name':'Python 3','language':'python','name':'python3'}},nbformat=4,nbformat_minor=5)
+    if serialized_source_bytes(notebook)>=1_000_000: raise ValueError('packed Kaggle source exceeds one megabyte')
     metadata=dict(id=job['handle'],title=job['slug'],code_file='notebook.ipynb',language='python',kernel_type='notebook',is_private=False,
         enable_gpu=True,enable_internet=True,dataset_sources=[job['dataset']],kernel_sources=[],competition_sources=[],model_sources=[])
     return notebook,metadata
@@ -142,7 +185,8 @@ def main():
     args.out.mkdir(parents=True,exist_ok=True)
     for name,value in [('job.json',job),('origin-manifest.json',origin),('warm-origin-manifest.json',warm_origin),('kernel-metadata.json',metadata),('notebook.ipynb',notebook)]:
         (args.out/name).write_text(json.dumps(value,indent=2,sort_keys=True)+'\n',encoding='utf-8')
-    print(json.dumps(dict(handle=job['handle'],origin_commit=origin['origin_commit'],public=True,source_bytes=len(bundle),warm_bytes=len(warm_bundle),checkpoint_bytes=[len(raw),len(warm_raw)])))
+    print(json.dumps(dict(handle=job['handle'],origin_commit=origin['origin_commit'],public=True,source_bytes=len(bundle),warm_bytes=len(warm_bundle),
+        checkpoint_bytes=[len(raw),len(warm_raw)],kaggle_source_bytes=serialized_source_bytes(notebook))))
 
 
 if __name__=='__main__': main()
