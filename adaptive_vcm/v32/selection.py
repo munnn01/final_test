@@ -29,7 +29,7 @@ class Bundle:
     seconds: float
 
 
-def build_candidates(rgb, protection, support, task, codec, cfg, baseline=None):
+def build_candidates(rgb, protection, support, task, codec, cfg, baseline=None, *, enable_retarget=True):
     validated_support(support, rgb.shape)
     control_task = 'od' if task == 'ot' else task
     candidates = [Candidate(c.name, c.clip, 'controls') for c in
@@ -43,7 +43,7 @@ def build_candidates(rgb, protection, support, task, codec, cfg, baseline=None):
         simplified[strength] = pixels
         if not np.array_equal(pixels, rgb):
             candidates.append(Candidate(f'roi_simplify_s{int(strength * 100):03}', pixels, 'simplification'))
-    for factor in cfg['roi']['factors']:
+    for factor in cfg['roi']['factors'] if enable_retarget else ():
         grids = build_grids(rgb.shape, support, factor, margin)
         if grids is None:
             continue
@@ -71,14 +71,15 @@ def select_arms(rows, slack, min_savings, has_baseline, *, extra_families=None):
 
 
 def choose_stream(rgb, protection, support, task, codec, cfg, teachers, source_predictions, baseline=None, *, guard=None,
-                  extra_candidates=(), extra_families=None, forced_names=None, unconditional_extra=False):
+                  extra_candidates=(), extra_families=None, forced_names=None, unconditional_extra=False, enable_retarget=True):
     start = time.perf_counter()
     if task not in ('ar', 'od', 'ot') or len(teachers) != (2 if task == 'ar' else 1):
         raise ValueError('V32 task/teacher count mismatch')
     if task == 'ot' and (baseline is not None or guard is None):
         raise ValueError('OT requires an explicit tracking guard and fixed-only scope')
     known = task == 'ar' or np.any(source_predictions[0]['scores'] >= cfg['od_score_threshold'])
-    candidates = (build_candidates(rgb, protection, support, task, codec, cfg, baseline) if known
+    routing = {} if enable_retarget else {'enable_retarget': False}
+    candidates = (build_candidates(rgb, protection, support, task, codec, cfg, baseline, **routing) if known
                   else [Candidate('identity', rgb.copy(), 'controls')])
     if known or unconditional_extra:
         if any(c.family in {'controls', 'simplification', 'retarget', 'learned', 'hybrid'} for c in extra_candidates):
