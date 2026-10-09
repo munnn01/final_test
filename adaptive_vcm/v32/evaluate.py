@@ -182,7 +182,7 @@ def run(args, *, extension=None, codec_factory=None):
                 prediction_cache = {}
                 for arm, (packet, name) in {'anchor': (bundle.anchor, 'identity'), **bundle.arms}.items():
                     if packet.packet_sha256 not in prediction_cache:
-                        prediction_cache[packet.packet_sha256] = (
+                        prediction_cache[packet.packet_sha256] = plugin['predict'](packet, item, evaluators, arm, codec, qp) if plugin.get('predict') else (
                             dict(correct={n: int(e.probabilities(packet.decoded).argmax() == item['label']) for n, e in evaluators.items()})
                             if args.task == 'ar' else dict(predictions=_od_predictions(evaluators[cfg['od_evaluator']].predict(packet.decoded), item['image_id'])))
                     packet_path = Path('packets') / codec / f'{position:05d}-q{qp}-{arm}.v32'
