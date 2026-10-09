@@ -76,3 +76,20 @@ checkout, use fixed ROI plus optionally frozen V30-B, pay reconstruction metadat
 and treat OT guard as conditional on the common anchor prefix. Actual per-arm
 independent tracking persists across windows. No new expert training or bit-exact
 VVC paper reproduction is asserted; statistical target confirmation remains false.
+
+## AR/OD paired Kaggle screens, 2026-10-09
+
+Both private version1 notebooks completed on T4 using source origin9039b05 and
+unchanged frozen task checkpoints through original runtime59ebb3d. Each task has
+32 held-out DEV sources,7 arms,5 QPs and2 codecs. All2240 rows,320 audits,
+selected packet SHA256/size/CRC/geometry and57 recursive Python hashes verified;
+TRAIN IDs/pixel hashes remain disjoint. Five AR and four OD selected packets
+independently decoded locally, including three ROI-grid packets.
+
+Primary paired results versus V30-B: AR R(2+1)D18 cubic BD-rate+3.90% H.264 and
++1.14% H.265; OD ResNet50−4.31% and−3.28%. AR incremental byte savings are tiny
+and independent Top-1 drops at QP40; OD mAP changes with QP despite passing
+teacher guards. Bootstrap0/DEV32, target_confirmed=false. Full interpretation:
+[V32_AR_OD.md](V32_AR_OD.md), artifacts in `../output/v32_ar_od_kaggle/`.
+Core code/config remain unchanged from the777-pass snapshot; these result
+documentation changes do not require another inherited full-suite run.

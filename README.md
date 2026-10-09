@@ -4,7 +4,8 @@
 khôi phục bằng grid truyền trong packet, tính cả overhead khi chọn luồng.
 Có thể kết hợp checkpoint V30-B frozen qua loader provenance gốc. Xem
 [các khối, đường dữ liệu và lệnh chạy V32](docs/V32_PROTOCOL.md).
-Không huấn luyện expert mới; chưa có benchmark BD-rate V32 AR/OD trên dữ liệu thật.
+Không huấn luyện expert mới. Đã chạy [AR/OD DEV32 trên Kaggle](docs/V32_AR_OD.md)
+với V30-B frozen: AR chưa cải thiện trên evaluator độc lập; OD giảm BD-rate khoảng3–4%, chưa xác nhận mục tiêu−10%.
 Đã thêm [object tracking MOT20 và notebook Kaggle](docs/V32_TRACKING.md):
 Hugging Face tải trực tiếp trong runtime, đánh giá HOTA/IDF1/MOTA bằng TrackEval.
 Screen MOT20-01 first32 đã COMPLETE: chọn identity, tiết kiệm0% byte.
