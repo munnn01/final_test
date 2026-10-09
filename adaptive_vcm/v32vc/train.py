@@ -94,7 +94,7 @@ def support_tensors(support,reference):
     return p,m,c
 
 
-def calibrate(records,cal_ids,cfg,vcfg,task,device,out):
+def calibrate(records,cal_ids,cfg,vcfg,task,device,out,*,codec_factory=V32Codec):
     rows = []
     for index,identifier in enumerate(cal_ids):
         record = records[identifier]; rgb,support = record['rgb'],record['support']
@@ -105,7 +105,7 @@ def calibrate(records,cal_ids,cfg,vcfg,task,device,out):
         if grid: variants.append(('retarget2',retarget(rgb,grid),grid))
         for codec in cfg['codecs']:
             for qp in cfg['qps']:
-                actual = V32Codec(codec,qp,cfg['preset'],Fraction(cfg['fps']))
+                actual = codec_factory(codec,qp,cfg['preset'],Fraction(cfg['fps']))
                 for name,pixels,grids in variants:
                     packet = actual.roundtrip(pixels,source_shape=rgb.shape,task=task,grids=grids)
                     coded = tensor(pixels,device); cuts = torch.from_numpy(support['cuts'].copy()).to(device)[None]

@@ -36,11 +36,11 @@ class Packet:
 
 
 class V32Codec:
-    def __init__(self, codec: str, qp: int, preset: str = 'medium', fps: Fraction = Fraction(25)):
+    def __init__(self, codec: str, qp: int, preset: str = 'medium', fps: Fraction = Fraction(25), *, gop_settings=None):
         if not isinstance(fps, Fraction) or fps <= 0:
             raise ValueError('V32 requires rational FPS')
         self.codec, self.qp, self.fps = codec, qp, fps
-        self.standard = StandardCodec(codec, qp, preset=preset, fps=fps)
+        self.standard = StandardCodec(codec, qp, preset=preset, fps=fps, gop_settings=gop_settings)
 
     def roundtrip(self, rgb, *, source_shape, task, grids=(), encoded=None):
         start = time.perf_counter()

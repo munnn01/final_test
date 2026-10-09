@@ -8,4 +8,6 @@ Ruling: User's explicit TRIỂN KHAI follows the concrete assessment and authori
 Ruling: Implement the first controlled improvement, including feature consistency and transfer diagnostics; adaptive scales/ROI-QP/multitask follow evidence. Cost if incomplete attribution: forced-CNN and paired-forward measurements expose it rather than tuning on TEST.
 Pre-flight: bridge/feature/protocol feed train; train checkpoint wrappers feed extension evaluation; all interfaces share B3THW RGB and uint8 inference conversion. Frozen warm runtime prevents relaxing historical provenance.
 
-Task1 pending; Task2 pending; Task3 pending; Task4 pending; final fresh review pending. No new performance claim.
+Ruling: Git Bash bookkeeping helper failed with NtCreateDirectoryObject access denied; native PowerShell ledger files provide the same bookkeeping. No product behavior changes.
+Task1 RED: missing v32rf module. GREEN: 39 passed (bridge, V32 codecs, VC model/training). Initial GREEN had four fixture setup errors because the explicit basetemp parent did not exist; created the workspace-local parent and reran successfully.
+Task1 complete; Task2 in progress; Task3 pending; Task4 pending; final fresh review pending. No new performance claim.
