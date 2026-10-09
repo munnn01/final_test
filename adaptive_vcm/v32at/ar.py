@@ -29,10 +29,17 @@ def run(args):
     swin = SwinAnalyzer(device)
     receiver = SharedReceiver(swin)
     def predict(packet, item, evaluators, arm, codec, qp):
+        before = time.perf_counter()
         received = receiver.predict(packet, sequence=item['id'], arm=f'{codec}/q{qp}/{arm}', frame_start=1, tasks=('ar',))
-        correct = {n:int(e.probabilities(packet.decoded).argmax()==item['label'])
-                   for n,e in evaluators.items() if n != 'swin3d_t'}
+        received['latency_seconds']['swin3d_t'] = received['latency_seconds'].pop('ar')
+        correct = {}
+        for name, evaluator in evaluators.items():
+            if name == 'swin3d_t': continue
+            head_start = time.perf_counter()
+            correct[name] = int(evaluator.probabilities(packet.decoded).argmax()==item['label'])
+            received['latency_seconds'][name] = time.perf_counter()-head_start
         correct['swin3d_t'] = int(received['ar']['top1']==item['label'])
+        received['total_prediction_seconds'] = time.perf_counter()-before
         return dict(correct=correct, shared_receiver=received)
     plugin = dict(models={'real':model}, families=FAMILIES, prepare=prepare_extension,
         evaluators=lambda d:{'swin3d_t':swin}, predict=predict,

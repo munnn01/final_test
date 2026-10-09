@@ -22,6 +22,9 @@ The receiver never encodes or decodes. It caches frozen-head predictions, while
 each sequence/codec/QP/arm retains independent mutable tracking state. Frames
 remain ordered and contiguous across codec windows; the final window is unpadded.
 Tracking coordinates map back to the original sequence dimensions.
+Prediction cache keys include decoded shape, dtype and pixel hash. AR rows record
+latency for Swin, R3D and R(2+1)D plus total prediction work. Reused packet predictions
+are marked explicitly and charged zero inference work for the repeated row.
 
 Common conditions: x264/x265 medium, QP30/35/40/45/50, closed GOP16, no B frames,
 scenecut disabled. Rates include the whole paid packet and ROI metadata.

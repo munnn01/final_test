@@ -53,3 +53,15 @@ def test_receiver_rejects_od_and_requires_detector():
         receiver.predict(packet(), sequence='s', arm='a', frame_start=1, tasks=('od',))
     with pytest.raises(ValueError, match='detector'):
         receiver.predict(packet(), sequence='s', arm='a', frame_start=1, tasks=('ot',))
+
+
+def test_equal_pixel_bytes_different_geometry_do_not_share_head_cache():
+    from adaptive_vcm.v32at.receiver import SharedReceiver
+    action,detector=Action(),Detector()
+    receiver=SharedReceiver(action,detector)
+    first=packet(3)
+    receiver.predict(first,sequence='first',arm='a',frame_start=1,tasks=('ar','ot'))
+    other=SimpleNamespace(decoded=first.decoded.reshape(1,16,48,3),packet_sha256='b'*64,coded_bytes=45)
+    result=receiver.predict(other,sequence='other',arm='a',frame_start=1,tasks=('ar','ot'))
+    assert len(result['ot']['frames'])==1
+    assert len(action.seen)==2 and len(detector.seen)==4

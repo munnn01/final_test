@@ -34,9 +34,10 @@ class SharedReceiver:
             if state.frame_number + 1 != frame_start:
                 raise ValueError('tracking frames must be ordered and contiguous')
         digest = hashlib.sha256(rgb.tobytes()).hexdigest()
+        cache_key = (rgb.shape, rgb.dtype.str, digest)
         # Keep only the current decoded clip. Cache head predictions, never tracks.
-        if self._cache.get('rgb_sha256') != digest:
-            self._cache = {'rgb_sha256': digest}
+        if self._cache.get('key') != cache_key:
+            self._cache = {'key': cache_key}
         result = dict(packet_sha256=packet.packet_sha256, rgb_sha256=digest,
                       coded_bytes=packet.coded_bytes, frame_start=frame_start,
                       frame_end=frame_start+len(rgb)-1, frame_count=len(rgb),

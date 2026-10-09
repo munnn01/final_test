@@ -181,10 +181,17 @@ def run(args, *, extension=None, codec_factory=None):
                 extension_record = dict(extension_preparation_seconds=extension_seconds) if vc_models else {}
                 prediction_cache = {}
                 for arm, (packet, name) in {'anchor': (bundle.anchor, 'identity'), **bundle.arms}.items():
+                    reused_prediction = packet.packet_sha256 in prediction_cache
                     if packet.packet_sha256 not in prediction_cache:
                         prediction_cache[packet.packet_sha256] = plugin['predict'](packet, item, evaluators, arm, codec, qp) if plugin.get('predict') else (
                             dict(correct={n: int(e.probabilities(packet.decoded).argmax() == item['label']) for n, e in evaluators.items()})
                             if args.task == 'ar' else dict(predictions=_od_predictions(evaluators[cfg['od_evaluator']].predict(packet.decoded), item['image_id'])))
+                    receiver_cost = {}
+                    if plugin.get('predict'):
+                        received = prediction_cache[packet.packet_sha256]['shared_receiver']
+                        receiver_cost = dict(prediction_cache_reused=reused_prediction,
+                            charged_receiver_seconds=0. if reused_prediction else received['total_prediction_seconds'],
+                            charged_head_seconds={} if reused_prediction else received['latency_seconds'])
                     packet_path = Path('packets') / codec / f'{position:05d}-q{qp}-{arm}.v32'
                     (out / packet_path).parent.mkdir(parents=True, exist_ok=True)
                     (out / packet_path).write_bytes(packet.data)
@@ -195,7 +202,7 @@ def run(args, *, extension=None, codec_factory=None):
                         elementary_bpp=reference_bpp(packet.elementary_bytes, rgb.shape),
                         packet_sha256=packet.packet_sha256, packet_path=packet_path.as_posix(),
                         source_preparation_seconds=preparation_seconds, selection_seconds=bundle.seconds,
-                        **prediction_cache[packet.packet_sha256], **extension_record)
+                        **prediction_cache[packet.packet_sha256], **extension_record, **receiver_cost)
                     rows.append(row)
                     with (out / 'rows.jsonl').open('a', encoding='utf-8') as handle:
                         handle.write(json.dumps(row, allow_nan=False) + '\n')

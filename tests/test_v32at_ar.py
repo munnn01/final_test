@@ -48,3 +48,10 @@ def test_ar_adapter_scores_same_packets_complete_grid_without_retarget(tmp_path,
         assert row['shared_receiver']['packet_sha256']==row['packet_sha256']
         parsed=unpack_packet((tmp_path/'out'/row['packet_path']).read_bytes())
         assert not parsed.grids
+        assert set(row['shared_receiver']['latency_seconds'])=={'swin3d_t','r3d_18','r2plus1d_18'}
+        assert row['shared_receiver']['total_prediction_seconds']>=sum(row['shared_receiver']['latency_seconds'].values())
+        if row['prediction_cache_reused']:
+            assert row['charged_receiver_seconds']==0 and row['charged_head_seconds']=={}
+        else:
+            assert row['charged_receiver_seconds']>0
+            assert set(row['charged_head_seconds'])=={'swin3d_t','r3d_18','r2plus1d_18'}
