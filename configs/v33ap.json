@@ -1,0 +1,15 @@
+{
+  "schema": "adaptive-vcm-v33ap-1", "seed": 303251, "width": 12,
+  "epochs": 2, "lr": 0.0001, "train_count": 64,
+  "feature_weight": 0.1, "distortion_weight": 10.0,
+  "rate_weight": 0.01, "temporal_weight": 0.1,
+  "step_scales": [0.5, 1.0, 2.0], "qps": [30,35,40,45,50],
+  "codecs": ["h264","h265"], "preset": "medium", "fps": 25,
+  "frames": 16, "temporal_stride": 2, "ar_size": 128, "od_size": 320,
+  "ar_confidence": 0.6, "ar_require_anchor_decision": true,
+  "ar_kl_slack": 0.1, "od_distance_slack": 0.03,
+  "od_score_threshold": 0.25, "min_savings": 0.01,
+  "pseudo_threshold": 0.5, "pseudo_topk": 20, "pseudo_weight": 0.25,
+  "ar_kl_weight": 0.25, "checkpoint_role": "LAST",
+  "roi": {"margin": 0.05, "factors": [2,4]}
+}
