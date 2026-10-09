@@ -46,12 +46,15 @@ def empty_output(path):
     return path
 
 
-def summarize(rows, ids, task, cfg, draws, meta=None, gt=None, *, has_baseline=False):
+def summarize(rows, ids, task, cfg, draws, meta=None, gt=None, *, has_baseline=False, extra_arms=()):
     """Refuse partial grids before fitting or bootstrapping any branch."""
     fingerprint(ids)
     arms = ['controls', 'simplification', 'retarget', 'v32']
     if has_baseline:
         arms += ['v30b', 'hybrid']
+    if len(set(extra_arms)) != len(extra_arms) or set(extra_arms) & {'anchor', *arms}:
+        raise ValueError('duplicate/unplanned extra arm grid')
+    arms += list(extra_arms)
     expected = {(i, c, q, a) for i in ids for c in cfg['codecs'] for q in cfg['qps'] for a in ['anchor', *arms]}
     keys = [(r['id'], r['codec'], r['qp'], r['arm']) for r in rows]
     if len(keys) != len(set(keys)) or set(keys) != expected:
@@ -109,6 +112,16 @@ def run(args):
     baseline = FrozenV30Baseline.load(args.checkpoint, args.v30_runtime, args.task, device) if args.checkpoint else None
     if baseline:
         baseline.validate_config(cfg)
+    vc_models, vc_families = {}, {}
+    if getattr(args, 'plain_checkpoint', None) or getattr(args, 'joint_checkpoint', None):
+        if not getattr(args, 'plain_checkpoint', None) or not getattr(args, 'joint_checkpoint', None):
+            raise ValueError('both V32-VC checkpoints required')
+        from ..v32vc.checkpoint import load_checkpoint
+        from ..v32vc.evaluate import EXTRA_FAMILIES
+        vc_models = {arm: load_checkpoint(getattr(args, arm + '_checkpoint'), args.task, device) for arm in ('plain', 'joint')}
+        if any(model.metadata['arm'] != arm for arm, model in vc_models.items()):
+            raise ValueError('V32-VC checkpoint arm mismatch')
+        vc_families = EXTRA_FAMILIES
     if args.task == 'ar':
         plan, meta = ar_plan(args.root, args.split, args.count)
         teachers = [ActionAnalyzer(n, device) for n in cfg['ar_teachers']]
@@ -132,6 +145,9 @@ def run(args):
         rate_denominator='original canonical source T*H*W pixels',
         receiver='standard H.264/H.265 decode then received-grid inverse retargeting',
         selection_cost='all candidate encodes, both codec decodes, inverse maps and teacher calls included; preparation recorded separately')
+    if vc_models:
+        manifest.update(scope='v32vc_paired_extension', v32vc={a: m.manifest for a, m in vc_models.items()},
+                        extra_arms=list(vc_families), comparison_limit='New FIT48/CAL16 versus historical V30-B TRAIN32; exploratory')
     write_json(out / 'manifest.json', manifest)
     rows, geometry, audit = [], {}, SourceAudit()
     for position, item in enumerate(plan):
@@ -142,13 +158,21 @@ def run(args):
         source_hash = audit.add(item['id'], rgb)
         if baseline:
             baseline.assert_source(item['id'], rgb)
+        for model in vc_models.values():
+            model.assert_source(item['id'], rgb)
         start = time.perf_counter()
         protection, support, source_predictions = prepare_source(rgb, args.task, cfg, teachers)
         preparation_seconds = time.perf_counter() - start
         for codec in cfg['codecs']:
             for qp in cfg['qps']:
+                actual_codec = V32Codec(codec, qp, cfg['preset'], Fraction(cfg['fps']))
+                extension = {}
+                if vc_models:
+                    from ..v32vc.evaluate import extra_candidates
+                    extension = dict(extra_candidates=extra_candidates(rgb, support, actual_codec, vc_models, cfg),
+                                     extra_families=vc_families)
                 bundle = choose_stream(rgb, protection, support, args.task,
-                    V32Codec(codec, qp, cfg['preset'], Fraction(cfg['fps'])), cfg, teachers, source_predictions, baseline)
+                    actual_codec, cfg, teachers, source_predictions, baseline, **extension)
                 prediction_cache = {}
                 for arm, (packet, name) in {'anchor': (bundle.anchor, 'identity'), **bundle.arms}.items():
                     if packet.packet_sha256 not in prediction_cache:
@@ -182,7 +206,8 @@ def run(args):
     gt = _gt_scaled(meta, plan, geometry) if args.task == 'od' else None
     if gt is not None:
         write_json(out / 'ground_truth_scaled.json', {'gt': gt, 'categories': meta['categories']})
-    summary = summarize(rows, ids, args.task, cfg, draws, meta, gt, has_baseline=baseline is not None)
+    summary = summarize(rows, ids, args.task, cfg, draws, meta, gt, has_baseline=baseline is not None,
+                        extra_arms=tuple(vc_families))
     summary['scope'] = manifest['scope']
     write_json(out / 'summary.json', summary)
     manifest['status'] = 'complete'

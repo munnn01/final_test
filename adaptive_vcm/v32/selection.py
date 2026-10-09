@@ -53,12 +53,16 @@ def build_candidates(rgb, protection, support, task, codec, cfg, baseline=None):
     return candidates
 
 
-def select_arms(rows, slack, min_savings, has_baseline):
+def select_arms(rows, slack, min_savings, has_baseline, *, extra_families=None):
     families = dict(controls={'controls'}, simplification={'controls', 'simplification'},
                     retarget={'controls', 'retarget'},
                     v32={'controls', 'simplification', 'retarget', 'learned', 'hybrid'})
     if has_baseline:
         families.update(v30b={'controls', 'learned'}, hybrid={'controls', 'learned', 'hybrid'})
+    for name, allowed in (extra_families or {}).items():
+        if name in families or not isinstance(allowed, set) or 'controls' not in allowed:
+            raise ValueError('extra arms must be explicit and retain controls fallback')
+        families[name] = allowed
     result = {}
     for name, allowed in families.items():
         indices = [i for i, row in enumerate(rows) if row['family'] in allowed]
@@ -66,7 +70,8 @@ def select_arms(rows, slack, min_savings, has_baseline):
     return result
 
 
-def choose_stream(rgb, protection, support, task, codec, cfg, teachers, source_predictions, baseline=None, *, guard=None):
+def choose_stream(rgb, protection, support, task, codec, cfg, teachers, source_predictions, baseline=None, *, guard=None,
+                  extra_candidates=(), extra_families=None):
     start = time.perf_counter()
     if task not in ('ar', 'od', 'ot') or len(teachers) != (2 if task == 'ar' else 1):
         raise ValueError('V32 task/teacher count mismatch')
@@ -75,6 +80,10 @@ def choose_stream(rgb, protection, support, task, codec, cfg, teachers, source_p
     known = task == 'ar' or np.any(source_predictions[0]['scores'] >= cfg['od_score_threshold'])
     candidates = (build_candidates(rgb, protection, support, task, codec, cfg, baseline) if known
                   else [Candidate('identity', rgb.copy(), 'controls')])
+    if known:
+        if any(c.family in {'controls', 'simplification', 'retarget', 'learned', 'hybrid'} for c in extra_candidates):
+            raise ValueError('extension candidates cannot enter historical V32 families')
+        candidates.extend(extra_candidates)
     slack = cfg['ar_kl_slack' if task == 'ar' else 'od_distance_slack']
     pixel_cache, packet_cache, teacher_cache = {}, {}, {}
     packets, rows, audit = [], [], []
@@ -117,6 +126,6 @@ def choose_stream(rgb, protection, support, task, codec, cfg, teachers, source_p
             relative_distances=[float(d) if np.isfinite(d) else None for d in distances],
             preserves_decision=list(decisions), encode_seconds=encoded.seconds if new_encode else 0.,
             receiver_seconds=packet.seconds if new_packet else 0.))
-    indices = select_arms(rows, slack, cfg['min_savings'], baseline is not None)
+    indices = select_arms(rows, slack, cfg['min_savings'], baseline is not None, extra_families=extra_families)
     return Bundle(packets[0], {arm: (packets[index], candidates[index].name) for arm, index in indices.items()},
                   audit, time.perf_counter() - start)
