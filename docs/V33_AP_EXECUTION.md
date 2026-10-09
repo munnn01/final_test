@@ -9,3 +9,5 @@ Ruling: Reuse the existing dedicated experimental checkout/branch and native Win
 Pre-flight: Task1 model/protocol feed Task2 sources and Task3 training; Task2 record/head interfaces feed Task3 training and Task4 receiver; Task3 strict checkpoint feeds Task4 evaluation; Task3/4 CLI and metadata feed Task5 payload. No conflicting interfaces. Historical V32 selector requires two AR teachers, so Task4 reuses only lower-level guard primitives.
 
 Task1: completed. Baseline RF bridge/VC model:22 passed. RED:8 intended missing-module failures. GREEN:31 passed,6.38s,exit0 (new model/protocol + VC model/real codec). Corrected a test fixture: tanh(10) saturates in float32, so the gradient check uses bias0.5 while the bound check retains10. No product change was needed for this fixture correction.
+
+Task2: completed. RED:5 missing-module failures. GREEN:new sources/tasks + RF bridge/VC training,21 passed,16.32s,exit0. Separate AR and OD gradients reach the same head; teachers have no gradients, BN/modes restored, empty pseudo boxes finite, COCO does not invoke action. Canonical pixels and explicit repetition/effective letterbox scales verified.
