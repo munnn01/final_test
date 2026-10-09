@@ -1,6 +1,6 @@
 # V33-AP: adaptive preprocessing dùng chung cho OD và AR
 
-Ngày: 2026-10-10. Trạng thái: thiết kế đã tự rà soát, chờ người dùng duyệt văn bản.
+Ngày: 2026-10-10. Trạng thái: người dùng đã duyệt văn bản bằng yêu cầu tiếp tục triển khai; chuyển sang lập kế hoạch.
 
 ## Mục tiêu và quyết định đã thống nhất
 
@@ -84,6 +84,8 @@ OD loss cần train-mode RPN/ROI để trả loss; giữ normalization/dropout c
 Codec primary: x264/x265, medium, QP30/35/40/45/50,25fps, bframes0, scenecut off, closed GOP; GOP16 cho AR clip và GOP1 cho COCO frame. Save command/config thực. Transfer dùng fast trên TEST8, giữ mọi setting còn lại. Rate đo bằng toàn bộ packet byte, gồm elementary stream, header và grid nếu có.
 
 Mỗi arm đánh giá identity anchor, CNN forced và adaptive selection identity/CNN. Selection chỉ đọc source/prediction/actual byte và threshold cố định; không đọc GT. Trên clip joint, CNN phải qua cả guard Swin và guard detector tại first/middle/last; giữ1% minimum byte savings, AR KL slack0.1 và anchor-decision requirement, OD distance slack0.03 như helper hiện có. Semantic checks dùng cùng geometry và threshold detector0.25. Trên COCO T=1, chỉ có OD guard. Fail guard hoặc không tiết kiệm đủ thì chọn identity. Forced CNN vẫn được báo để nhìn thấy model yếu dù selection fallback.
+
+Làm rõ OD guard của clip: chỉ frame sampled có source box đáng tin cậy mới tạo ràng buộc box preservation; tất cả ràng buộc này phải đạt slack. Ghi frame có/không có evidence trong audit. Nếu cả clip không có frame sampled đáng tin cậy, hoặc prediction không hữu hạn, CNN bị loại và giữ identity; không tính `inf-inf` thành một kết quả hợp lệ. Loss background trên frame không có pseudo-box vẫn hoạt động khi train.
 
 Retarget tắt trên AR và toàn bộ training. Đánh giá OD thêm raw-retarget và CNN+retarget factor2/4 bằng grid đã serialize, inverse chỉ từ packet và source-coordinate scoring. Đây là ablation OD trên ảnh, không gọi là retarget bảo toàn AR. Ghi selection/search/inverse cost và mọi metadata byte; không gộp lợi ích geometry vào kết luận của CNN plain.
 
