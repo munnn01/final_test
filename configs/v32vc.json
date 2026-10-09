@@ -1,0 +1,6 @@
+{
+  "schema": "adaptive-vcm-v32vc-1", "seed": 303221, "width": 12,
+  "train_count": 64, "epochs": 4, "lr": 0.0001,
+  "rate_weight": 0.01, "distortion_weight": 10.0,
+  "step_scales": [0.5, 1.0, 2.0], "checkpoint_role": "LAST"
+}
