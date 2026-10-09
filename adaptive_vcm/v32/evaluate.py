@@ -116,11 +116,10 @@ def run(args):
     if getattr(args, 'plain_checkpoint', None) or getattr(args, 'joint_checkpoint', None):
         if not getattr(args, 'plain_checkpoint', None) or not getattr(args, 'joint_checkpoint', None):
             raise ValueError('both V32-VC checkpoints required')
-        from ..v32vc.checkpoint import load_checkpoint
+        from ..v32vc.checkpoint import load_checkpoint, validate_pair
         from ..v32vc.evaluate import EXTRA_FAMILIES
         vc_models = {arm: load_checkpoint(getattr(args, arm + '_checkpoint'), args.task, device) for arm in ('plain', 'joint')}
-        if any(model.metadata['arm'] != arm for arm, model in vc_models.items()):
-            raise ValueError('V32-VC checkpoint arm mismatch')
+        validate_pair(vc_models)
         vc_families = EXTRA_FAMILIES
     if args.task == 'ar':
         plan, meta = ar_plan(args.root, args.split, args.count)
@@ -166,13 +165,14 @@ def run(args):
         for codec in cfg['codecs']:
             for qp in cfg['qps']:
                 actual_codec = V32Codec(codec, qp, cfg['preset'], Fraction(cfg['fps']))
-                extension = {}
+                extension, extension_seconds = {}, 0.
                 if vc_models:
-                    from ..v32vc.evaluate import extra_candidates
-                    extension = dict(extra_candidates=extra_candidates(rgb, support, actual_codec, vc_models, cfg),
-                                     extra_families=vc_families)
+                    from ..v32vc.evaluate import prepare_extension
+                    extension, extension_seconds = prepare_extension(rgb, support, actual_codec, vc_models, cfg)
                 bundle = choose_stream(rgb, protection, support, args.task,
                     actual_codec, cfg, teachers, source_predictions, baseline, **extension)
+                bundle.seconds += extension_seconds
+                extension_record = dict(extension_preparation_seconds=extension_seconds) if vc_models else {}
                 prediction_cache = {}
                 for arm, (packet, name) in {'anchor': (bundle.anchor, 'identity'), **bundle.arms}.items():
                     if packet.packet_sha256 not in prediction_cache:
@@ -189,7 +189,7 @@ def run(args):
                         elementary_bpp=reference_bpp(packet.elementary_bytes, rgb.shape),
                         packet_sha256=packet.packet_sha256, packet_path=packet_path.as_posix(),
                         source_preparation_seconds=preparation_seconds, selection_seconds=bundle.seconds,
-                        **prediction_cache[packet.packet_sha256])
+                        **prediction_cache[packet.packet_sha256], **extension_record)
                     rows.append(row)
                     with (out / 'rows.jsonl').open('a', encoding='utf-8') as handle:
                         handle.write(json.dumps(row, allow_nan=False) + '\n')
@@ -197,7 +197,7 @@ def run(args):
                     candidates=bundle.audit, source_support=support['metadata'], selection_seconds=bundle.seconds,
                     probe_cost=dict(encodes=sum(r['distinct_encode'] for r in bundle.audit),
                         packet_decodes=sum(r['distinct_packet_decode'] for r in bundle.audit),
-                        teacher_calls=sum(r['teacher_calls'] for r in bundle.audit)))
+                        teacher_calls=sum(r['teacher_calls'] for r in bundle.audit)), **extension_record)
                 with (out / 'selection_audit.jsonl').open('a', encoding='utf-8') as handle:
                     handle.write(json.dumps(record, allow_nan=False) + '\n')
         manifest['source_pixel_sha256'] = audit.hashes.copy()

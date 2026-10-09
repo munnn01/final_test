@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 from adaptive_vcm.data import partition
-from adaptive_vcm.v32vc.train import split_train, task_loss, fit_rate, od_targets
+from adaptive_vcm.v32vc.train import split_train, task_loss, fit_rate, od_targets, settings
 from adaptive_vcm.v32vc.checkpoint import make_checkpoint, load_checkpoint
 from adaptive_vcm.v32vc.model import ResidualPreprocessor
 
@@ -63,19 +63,49 @@ def test_od_training_boxes_use_canonical_geometry_and_ignore_crowd():
     assert targets['boxes'].tolist()==[[2.,4.,5.,8.]] and targets['labels'].tolist()==[3]
 
 
-def test_checkpoint_integrity_and_both_fit_cal_overlap(tmp_path):
+def checkpoint_fixture():
     model = ResidualPreprocessor('od')
     rgb = np.zeros((1,16,16,3),np.uint8)
     import hashlib
-    ids = [str(i) for i in range(100) if partition('coco2017/'+str(i))=='train'][:4]
+    ids = [str(i) for i in range(300) if partition('coco2017/'+str(i))=='train'][:64]
     fit,cal = split_train(ids,'od',303221)
-    metadata = dict(task='od',arm='plain',width=12,seed=303221,epochs=4,
+    metadata = dict(task='od',arm='plain',width=12,seed=303221,epochs=4,settings=settings(),
+                    supervision_sha256='a'*64,annotations_sha256='b'*64,
                     fit_ids=fit,cal_ids=cal,source_pixel_sha256={i:hashlib.sha256((rgb+int(i)).tobytes()).hexdigest() for i in ids},
                     calibration={f'{c}/{q}':dict(step=.03,rate_scale=1.,rate_offset=0.) for c in ('h264','h265') for q in (30,35,40,45,50)},
-                    history=[dict(epoch=i+1) for i in range(4)])
+                    history=[dict(epoch=i+1,steps=480,seconds=1.,loss=1.,task_loss=1.,distortion=.01,estimated_bpp=1.,gradient_norm=1.) for i in range(4)])
+    return model,metadata,rgb
+
+
+def test_checkpoint_integrity_and_both_fit_cal_overlap(tmp_path):
+    model,metadata,rgb = checkpoint_fixture()
+    fit,cal = metadata['fit_ids'],metadata['cal_ids']
     path = tmp_path/'last.pth'; payload = make_checkpoint(model,metadata); torch.save(payload,path)
     loaded = load_checkpoint(path,'od')
     with pytest.raises(ValueError): loaded.assert_source(cal[0],rgb)
     with pytest.raises(ValueError): loaded.assert_source('fresh',rgb+int(fit[0]))
     payload['model']['head.bias'][0] += 1; torch.save(payload,path)
+    with pytest.raises(ValueError): load_checkpoint(path,'od')
+
+
+def test_plain_joint_pair_requires_identical_training_and_calibration_provenance():
+    from adaptive_vcm.v32vc.checkpoint import validate_pair
+    _,meta,_=checkpoint_fixture()
+    plain=type('Model',(),{'metadata':meta})()
+    joint=type('Model',(),{'metadata':copy.deepcopy(meta)})()
+    joint.metadata['arm']='joint'
+    validate_pair({'plain':plain,'joint':joint})
+    joint.metadata['calibration']['h264/30']['step']=.2
+    with pytest.raises(ValueError): validate_pair({'plain':plain,'joint':joint})
+
+
+@pytest.mark.parametrize('alter',['counts','settings','history'])
+def test_rehashed_incompatible_checkpoint_is_rejected(tmp_path,alter):
+    model,meta,_ = checkpoint_fixture()
+    if alter=='counts':
+        meta['fit_ids']=meta['fit_ids'][:3]; meta['cal_ids']=meta['cal_ids'][:1]
+        meta['source_pixel_sha256']={i:meta['source_pixel_sha256'][i] for i in meta['fit_ids']+meta['cal_ids']}
+    elif alter=='settings': meta['settings']['lr']=100.
+    else: meta['history']=[dict(epoch=i+1) for i in range(4)]
+    path=tmp_path/'bad.pth'; torch.save(make_checkpoint(model,meta),path)
     with pytest.raises(ValueError): load_checkpoint(path,'od')

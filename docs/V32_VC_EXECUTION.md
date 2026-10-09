@@ -13,3 +13,8 @@ Task3: four explicit extra arms; historical V32 default pool unchanged. Complete
 Ruling: pytest default sandbox TEMP was unwritable; reran with explicit workspace TEMP and basetemp. This was fixture setup, not a model failure.
 Task4: private notebook generator implemented after missing-module RED; payload verification in progress. Quota read-only preflight:15.19 GPUh remaining at2026-10-09T06:31:44Z.
 No new AR/OD performance claim yet. Fresh branch review precedes cloud submission.
+
+Fresh reviewer gpt-6-astra found no Critical, two Important (locked checkpoint recipe/pair validation; extension preparation timing), one Minor (supervised target provenance). One fix pass adds strict FIT48/CAL16/settings/480-step finite epochs, matching plain/joint provenance, measured candidate preparation included in selection time, and annotation/target digests. Regression RED observed: three incompatible checkpoint tests failed to raise; pair/timing functions missing. Reviewer independently verified DCT inversion and complete OD task gradient path with unchanged teacher state.
+Declined-to-judge rulings: real rate/quality, pretrained convergence/CUDA memory, and live Kaggle reliability require actual cloud execution; retain these as experiment requirements, not review-proven claims.
+
+Review fix pass GREEN:113 passed in70.20s for all new tests plus inherited V32 ROI, codec selection/evaluation, wire format, baseline, tracking and payload. Includes locked metadata rejection, matching pair, candidate timing, block inversion and real receiver checks. Product source will be frozen at this fix commit for both cloud jobs.

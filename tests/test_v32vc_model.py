@@ -69,6 +69,13 @@ def test_orthonormal_dct_and_constant_color_roundtrip():
     assert torch.allclose(color_rgb(color_planes(x)),x,atol=1e-6)
 
 
+def test_actual_block_dct_inverse_preserves_nonaligned_pixels():
+    virtual = VirtualCodec()
+    x = torch.rand(2,1,14,18)
+    coefficients,shape = virtual._blocks(x)
+    assert torch.allclose(virtual._inverse(coefficients,shape),x,atol=4e-6)
+
+
 def test_fixed_grid_resampling_matches_receiver_and_passes_gradients():
     g = (Grid(0,2,(0,5,18),(0,5,12),(0,4,16),(0,4,10)),)
     pixels = np.random.default_rng(4).integers(0,256,(2,16,18,3),dtype=np.uint8)

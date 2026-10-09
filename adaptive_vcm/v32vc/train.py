@@ -166,6 +166,16 @@ def run(args):
         print(f'TRAIN source preparation {index+1}/{len(plan)}',flush=True)
     manifest = dict(task=args.task,settings=vcfg,fit_ids=fit_ids,cal_ids=cal_ids,source_pixel_sha256=audit.hashes,
                     code=provenance(cfg),protocol=cfg,status='calibration',device=device)
+    supervised = {}
+    for identifier in fit_ids:
+        record = records[identifier]
+        if args.task=='ar': supervised[identifier] = record['item']['label']
+        else:
+            target = od_targets(meta,record['item'],record['geometry'],'cpu')
+            supervised[identifier] = {k:v.tolist() for k,v in target.items()}
+    manifest.update(supervision_sha256=canonical_hash(supervised),
+                    annotations_sha256=hashlib.sha256(args.annotations.read_bytes()).hexdigest() if args.task=='od' else None)
+    write_json(out/'fit_supervision.json',supervised)
     write_json(out/'manifest.json',manifest)
     calibration = calibrate(records,cal_ids,cfg,vcfg,args.task,device,out)
     groups = [(c,q) for c in cfg['codecs'] for q in cfg['qps']]
@@ -214,7 +224,8 @@ def run(args):
             history.append(dict(epoch=epoch+1,steps=count,seconds=time.perf_counter()-start,**{k:v/count for k,v in totals.items()}))
             print(json.dumps(dict(arm=arm,**history[-1])),flush=True)
         metadata = dict(task=args.task,arm=arm,width=vcfg['width'],seed=vcfg['seed'],epochs=vcfg['epochs'],settings=vcfg,
-                        fit_ids=fit_ids,cal_ids=cal_ids,source_pixel_sha256=audit.hashes,calibration=calibration,history=history)
+                        fit_ids=fit_ids,cal_ids=cal_ids,source_pixel_sha256=audit.hashes,calibration=calibration,history=history,
+                        supervision_sha256=manifest['supervision_sha256'],annotations_sha256=manifest['annotations_sha256'])
         torch.save(make_checkpoint(model,metadata),out/f'{arm}_last.pth')
     manifest.update(status='complete',calibration=calibration)
     write_json(out/'manifest.json',manifest)

@@ -1,5 +1,6 @@
 """Explicit V32-VC arms, measured alongside unchanged historical V32 families."""
 import argparse
+import time
 from pathlib import Path
 from ..v32.selection import Candidate
 from ..v32.roi import build_grids,retarget
@@ -22,6 +23,12 @@ def extra_candidates(rgb,support,codec,models,cfg):
             candidates.extend((Candidate(f'vc_raw_retarget_f{factor}',retarget(rgb,grid),'vc_retarget_only',grid),
                                Candidate(f'vc_joint_retarget_f{factor}',retarget(joint,grid),'vc_joint_retarget',grid)))
     return candidates
+
+
+def prepare_extension(rgb,support,codec,models,cfg):
+    start = time.perf_counter()
+    candidates = extra_candidates(rgb,support,codec,models,cfg)
+    return dict(extra_candidates=candidates,extra_families=EXTRA_FAMILIES),time.perf_counter()-start
 
 
 def main():

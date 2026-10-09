@@ -4,7 +4,7 @@ from adaptive_vcm.selection import Observation
 from adaptive_vcm.v32.selection import select_arms
 from adaptive_vcm.v32.evaluate import summarize
 from adaptive_vcm.v32.protocol import load_config
-from adaptive_vcm.v32vc.evaluate import EXTRA_FAMILIES, extra_candidates
+from adaptive_vcm.v32vc.evaluate import EXTRA_FAMILIES, extra_candidates, prepare_extension
 from tests.test_v32_evaluate import records
 from tests.test_v32_roi import pixels,support
 
@@ -38,6 +38,14 @@ def test_candidates_keep_same_source_and_paid_grids():
     assert sum(c.family=='vc_retarget_only' for c in generated)==2
     assert sum(c.family=='vc_joint_retarget' for c in generated)==2
     assert all(c.grids and c.rgb.shape[1]<rgb.shape[1] for c in generated if 'retarget' in c.family)
+
+
+def test_extension_preparation_time_includes_cnn_and_grid_generation(monkeypatch):
+    import adaptive_vcm.v32vc.evaluate as module
+    ticks=iter([10.,10.25]); monkeypatch.setattr(module.time,'perf_counter',lambda:next(ticks))
+    monkeypatch.setattr(module,'extra_candidates',lambda *a: ['measured'])
+    kwargs,seconds=prepare_extension(None,None,None,None,None)
+    assert seconds==.25 and kwargs['extra_candidates']==['measured'] and kwargs['extra_families']==EXTRA_FAMILIES
 
 
 @pytest.mark.parametrize('codec',['h264','h265'])

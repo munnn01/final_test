@@ -67,10 +67,16 @@ def load_checkpoint(path,task,device='cpu'):
             or any(re.fullmatch('[0-9a-f]{64}',str(h)) is None for h in hashes.values())
             or any(partition('coco2017/'+i if task=='od' else i)!='train' for i in ids)):
         raise ValueError('invalid FIT/CAL source provenance')
+    from .train import settings, split_train
+    if (meta.get('settings')!=settings() or len(fit)!=48 or len(cal)!=16
+            or (fit,cal)!=split_train(ids,task,303221)):
+        raise ValueError('checkpoint differs from locked FIT48/CAL16 recipe')
+    if (re.fullmatch('[0-9a-f]{64}',str(meta.get('supervision_sha256',''))) is None
+            or task=='od' and re.fullmatch('[0-9a-f]{64}',str(meta.get('annotations_sha256',''))) is None):
+        raise ValueError('supervised target provenance missing')
     expected = {f'{c}/{q}' for c in ('h264','h265') for q in (30,35,40,45,50)}
     if set(meta.get('calibration',{}))!=expected or meta.get('protocol')!=load_config():
         raise ValueError('incomplete calibration/protocol mismatch')
-    from .virtual import VirtualCodec
     for entry in meta['calibration'].values():
         if (not isinstance(entry,dict) or any(k not in entry for k in ('step','rate_scale','rate_offset'))
                 or any(not np.isfinite(entry[k]) for k in ('step','rate_scale','rate_offset'))
@@ -79,8 +85,21 @@ def load_checkpoint(path,task,device='cpu'):
     history = meta.get('history',[])
     if len(history)!=4 or [r.get('epoch') for r in history]!=[1,2,3,4]:
         raise ValueError('incomplete LAST history')
+    for row in history:
+        if row.get('steps')!=480 or any(type(row.get(k)) not in (int,float) or not np.isfinite(row[k])
+            or row[k]<0 for k in ('seconds','loss','task_loss','distortion','estimated_bpp','gradient_norm')):
+            raise ValueError('incomplete/nonfinite locked epoch history')
     if meta.get('code',{}).get('code_files_sha256')!=provenance(load_config())['code_files_sha256']:
         raise ValueError('checkpoint runtime source mismatch')
     model = ResidualPreprocessor(task,meta['width']).to(device)
     model.load_state_dict(payload['model'],strict=True)
     return LearnedPreprocessor(model.eval(),meta,hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+def validate_pair(models):
+    if set(models)!={'plain','joint'} or any(m.metadata.get('arm')!=a for a,m in models.items()):
+        raise ValueError('plain/joint checkpoint arms required')
+    keys = ('task','width','seed','epochs','fit_ids','cal_ids','source_pixel_sha256','calibration',
+            'settings','protocol','code','supervision_sha256','annotations_sha256')
+    if any(models['plain'].metadata.get(k)!=models['joint'].metadata.get(k) for k in keys):
+        raise ValueError('plain/joint training/calibration provenance differs')
