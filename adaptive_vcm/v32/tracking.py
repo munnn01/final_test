@@ -413,7 +413,8 @@ def exploratory_summary(points):
         selection_scope='all fixed candidate probes measured; labels and evaluator excluded')
 
 
-def run(args):
+def run(args, *, extension=None):
+    plugin = extension or {}
     out = empty_output(args.out)
     trackeval = load_trackeval(args.trackeval_root)
     cfg = load_config(args.config)
@@ -438,6 +439,7 @@ def run(args):
         ground_truth_access='only after all label-free selections and evaluator predictions',
         selection_cost='all candidate encodes, received packet decodes and frozen teacher frame calls',
         baseline=None, training=False, target_confirmed=False, bootstrap_confidence=None)
+    manifest.update(plugin.get('manifest', {}))
     write_json(out / 'config_snapshot.json', run_config)
     write_json(out / 'manifest.json', manifest)
     teacher_detector = DetectionAnalyzer(cfg['od_teacher'], device)
@@ -472,12 +474,12 @@ def run(args):
                                     for identifier, frame in zip(frame_ids, rgb)})
         write_json(out / 'manifest.json', manifest)
         prepared = []
-        clean_teacher = TrackingTeacher(teacher_detector)
+        clean_teacher = plugin.get('teacher_factory', TrackingTeacher)(teacher_detector)
         for start in range(0, len(rgb), 16):
             clip = rgb[start:start + 16]
             before = time.perf_counter()
             source = clean_teacher.predict(clip)
-            union, support = source_support(clip, source, args.motion_support)
+            union, support = plugin.get('support', source_support)(clip, source, args.motion_support)
             clean_teacher.commit(source)
             clean_teacher.probe_predictions.clear()
             preparation_seconds = time.perf_counter() - before
@@ -488,12 +490,12 @@ def run(args):
                 cached_across_codec_qp_points=True, source_support=support['metadata']))
         for codec_name in cfg['codecs']:
             for qp in cfg['qps']:
-                codec = V32Codec(codec_name, qp, cfg['preset'], item['fps'])
-                teacher = TrackingTeacher(teacher_detector)
+                codec = plugin.get('codec_factory', V32Codec)(codec_name, qp, cfg['preset'], item['fps'])
+                teacher = plugin.get('teacher_factory', TrackingTeacher)(teacher_detector)
                 trackers = {arm: ReferenceTracker() for arm in ARMS}
                 evaluated_frames = {arm: [] for arm in ARMS}
                 for start, clip, source, union, support, preparation_seconds in prepared:
-                    guard = TrackingGuard()
+                    guard = plugin.get('guard_factory', TrackingGuard)()
                     teacher.probe_predictions.clear()
                     bundle = choose_stream(clip, union, support, 'ot', codec, cfg,
                                            [teacher], [source], guard=guard)
@@ -515,10 +517,21 @@ def run(args):
                         if packet.decoded.shape != clip.shape:
                             raise RuntimeError('evaluator must receive canonical reconstructed coordinates')
                         digest = packet.packet_sha256
-                        if digest not in predictions_cache:
-                            predictions_cache[digest] = [evaluator_detector.predict(frame[None]) for frame in packet.decoded]
-                            evaluator_calls += len(packet.decoded)
-                        evaluated_frames[arm].extend(trackers[arm].step(d) for d in predictions_cache[digest])
+                        receiver_record = {}
+                        if plugin.get('receiver'):
+                            received = plugin['receiver'](packet, sequence=name,
+                                arm=f'{codec_name}/q{qp}/{arm}', frame_start=start+1,
+                                detector=evaluator_detector, tracker=trackers[arm])
+                            evaluated_frames[arm].extend(received['ot']['frames'])
+                            evaluator_calls += received['ot']['detector_frame_calls']
+                            receiver_record = dict(shared_receiver={k:v for k,v in received.items() if k!='ot'})
+                            append(out / 'action_predictions.jsonl', dict(id=name,codec=codec_name,qp=qp,
+                                arm=arm,**receiver_record['shared_receiver']))
+                        else:
+                            if digest not in predictions_cache:
+                                predictions_cache[digest] = [evaluator_detector.predict(frame[None]) for frame in packet.decoded]
+                                evaluator_calls += len(packet.decoded)
+                            evaluated_frames[arm].extend(trackers[arm].step(d) for d in predictions_cache[digest])
                         relative = Path('packets') / name / codec_name / f'q{qp}-{arm}-{start+1:06}.v32'
                         (out / relative).parent.mkdir(parents=True, exist_ok=True)
                         with (out / relative).open('xb') as handle:
@@ -535,7 +548,8 @@ def run(args):
                             source_shape=list(clip.shape), coded_shape=list(packet.coded_shape),
                             reconstructed_shape=list(packet.decoded.shape), packet_sha256=digest,
                             source_sha256=source['rgb_sha256'], packet_path=relative.as_posix(),
-                            source_preparation_seconds=preparation_seconds, selection_seconds=bundle.seconds))
+                            source_preparation_seconds=preparation_seconds, selection_seconds=bundle.seconds,
+                            **receiver_record))
                     append(out / 'selection_audit.jsonl', dict(id=name, codec=codec_name, qp=qp,
                         frame_start=start+1, frame_end=start+len(clip), candidates=bundle.audit,
                         selected={arm: candidate for arm, (_, candidate) in bundle.arms.items()},
@@ -563,6 +577,9 @@ def run(args):
         point['metrics'] = metrics[f'{codec}_q{qp}_{arm}']['combined']
         point['sequence_metrics'] = metrics[f'{codec}_q{qp}_{arm}']['sequences']
     summary = exploratory_summary(list(points.values()))
+    if plugin:
+        summary.update({k:v for k,v in plugin.get('manifest',{}).items()
+                        if k in ('scope','active_tasks','action_accuracy','action_bd_rate','action_metric_reason')})
     write_json(out / 'summary.json', summary)
     manifest['status'] = 'complete'
     write_json(out / 'manifest.json', manifest)
