@@ -5,7 +5,7 @@ import re
 import numpy as np
 import torch
 from . import SCHEMA
-from .protocol import settings,split_cal
+from .protocol import settings,split_cal,execution
 from ..v32.protocol import canonical_hash,load_config,provenance
 from ..v32vc.checkpoint import state_hash,LearnedPreprocessor
 from ..v32vc.model import ResidualPreprocessor
@@ -45,7 +45,8 @@ def load_checkpoint(path,task,device='cpu'):
             or task=='od' and not _hash(m.get('annotations_sha256'))):
         raise ValueError('RF target provenance missing')
     expected={f'{c}/{q}' for c in ('h264','h265') for q in (30,35,40,45,50)}
-    if set(m.get('calibration',{}))!=expected or m.get('protocol')!=load_config():
+    if (set(m.get('calibration',{}))!=expected or m.get('protocol')!=load_config()
+            or m.get('codec_execution')!=execution(task)):
         raise ValueError('RF calibration/protocol mismatch')
     for entry in m['calibration'].values():
         if (any(type(entry.get(k)) not in (int,float) or not np.isfinite(entry[k]) for k in ('step','rate_scale','rate_offset'))
@@ -57,6 +58,11 @@ def load_checkpoint(path,task,device='cpu'):
         if row.get('steps')!=480 or any(type(row.get(k)) not in (int,float) or not np.isfinite(row[k]) or row[k]<0
                 for k in ('seconds','loss','task_loss','feature_loss','distortion','estimated_bpp','gradient_norm','actual_codec_seconds')):
             raise ValueError('incomplete/nonfinite RF history')
+        measured=row.get('actual_bpp')
+        if (m['arm']=='real' and (type(measured) not in (int,float) or not np.isfinite(measured)
+                or measured<=0 or row['actual_codec_seconds']<=0)
+                or m['arm']=='proxy' and ('actual_bpp' not in row or measured is not None or row['actual_codec_seconds']!=0)):
+            raise ValueError('RF actual codec measurement evidence differs from forward arm')
     if m.get('code',{}).get('code_files_sha256')!=provenance(load_config())['code_files_sha256']:
         raise ValueError('RF runtime source mismatch')
     model=ResidualPreprocessor(task,m['width']).to(device); model.load_state_dict(payload['model'],strict=True)
@@ -67,6 +73,6 @@ def validate_pair(models):
     if set(models)!={'proxy','real'} or any(m.metadata.get('arm')!=a for a,m in models.items()):
         raise ValueError('RF proxy/real pair required')
     keys=('task','width','seed','epochs','settings','warm','fit_ids','cal_ids','proxy_val_ids','source_pixel_sha256',
-        'supervision_sha256','feature_targets_sha256','annotations_sha256','calibration','protocol','code')
+        'supervision_sha256','feature_targets_sha256','annotations_sha256','calibration','protocol','code','codec_execution')
     if any(models['proxy'].metadata.get(k)!=models['real'].metadata.get(k) for k in keys):
         raise ValueError('RF pair starting state/calibration/provenance differs')

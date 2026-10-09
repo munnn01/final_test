@@ -7,7 +7,7 @@ import torch
 from adaptive_vcm.v32rf.warm import load_warm
 from adaptive_vcm.v32rf.checkpoint import make_checkpoint, load_checkpoint, validate_pair
 from adaptive_vcm.v32rf.train import training_step, diagnose_point
-from adaptive_vcm.v32rf.protocol import settings, split_cal, codec_factory
+from adaptive_vcm.v32rf.protocol import settings, split_cal, codec_factory, execution
 from adaptive_vcm.v32rf.features import feature_vectors
 from adaptive_vcm.v32vc.virtual import VirtualCodec
 from adaptive_vcm.v32vc.model import ResidualPreprocessor
@@ -21,11 +21,11 @@ def fixture():
     warm=dict(origin_commit=settings()['warm_origin'],checkpoint_sha256='a'*64,state_sha256=state_hash(model.state_dict()),
         fit_ids=old['fit_ids'],cal_ids=old['cal_ids'],source_pixel_sha256=copy.deepcopy(old['source_pixel_sha256']))
     history=[dict(epoch=i,steps=480,seconds=1.,loss=1.,task_loss=1.,feature_loss=.1,
-        distortion=.01,estimated_bpp=.2,gradient_norm=.1,actual_codec_seconds=1.) for i in (1,2)]
+        distortion=.01,estimated_bpp=.2,gradient_norm=.1,actual_codec_seconds=0.,actual_bpp=None) for i in (1,2)]
     meta=dict(task='od',arm='proxy',width=12,seed=303231,epochs=2,settings=settings(),warm=warm,
         fit_ids=old['fit_ids'],cal_ids=cal,proxy_val_ids=val,source_pixel_sha256=old['source_pixel_sha256'],
         supervision_sha256='b'*64,feature_targets_sha256='c'*64,annotations_sha256='d'*64,
-        calibration=old['calibration'],history=history)
+        calibration=old['calibration'],history=history,codec_execution=execution('od'))
     return model,meta,rgb
 
 
@@ -103,3 +103,24 @@ def test_actual_detection_feature_and_loss_gradient_through_real_decoder():
     terms['loss'].backward()
     assert model.head.weight.grad.abs().sum()>0 and torch.isfinite(model.head.weight.grad).all()
     assert all(torch.equal(before[k],v) for k,v in net.named_buffers()) and all(p.grad is None for p in net.parameters())
+
+
+@pytest.mark.parametrize('bad',['missing_execution','fast_preset','wrong_gop','missing_real_rate','nonfinite_real_rate','proxy_measured_rate'])
+def test_locked_actual_codec_evidence_cannot_be_rehashed_away(tmp_path,bad):
+    model,meta,_=fixture()
+    if bad=='missing_execution': meta.pop('codec_execution')
+    elif bad=='fast_preset': meta['codec_execution']['preset']='fast'
+    elif bad=='wrong_gop': meta['codec_execution']['gop_settings']['gop']=16
+    else:
+        if bad!='proxy_measured_rate':
+            meta['arm']='real'
+            for r in meta['history']: r['actual_codec_seconds']=1.
+        for r in meta['history']: r['actual_bpp']=None if bad=='missing_real_rate' else -1. if bad=='nonfinite_real_rate' else 1.
+    path=tmp_path/'bad_conditions.pth'; torch.save(make_checkpoint(model,meta),path)
+    with pytest.raises(ValueError): load_checkpoint(path,'od')
+
+
+def test_pair_cannot_claim_different_codec_execution():
+    _,meta,_=fixture(); real=copy.deepcopy(meta); real['arm']='real'; real['codec_execution']['preset']='fast'
+    models={a:type('Model',(),{'metadata':m})() for a,m in [('proxy',meta),('real',real)]}
+    with pytest.raises(ValueError): validate_pair(models)
