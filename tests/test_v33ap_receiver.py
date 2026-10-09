@@ -28,3 +28,11 @@ def test_backbone_latencies():
     got=r.predict(packet(record().rgb),tasks=('ar','od'),indices=(0,2))
     assert set(got['latency_seconds'])=={'ar/swin3d_t','ar/r3d_18','od'}
     assert got['total_prediction_seconds']>=sum(got['latency_seconds'].values())
+
+
+def test_equal_rgb_different_wire_reports_current_packet():
+    from adaptive_vcm.v33ap.receiver import SharedReceiver
+    r=SharedReceiver(Action(),Detector()); p=packet(record().rgb)
+    r.predict(p,tasks=('ar','od')); p.packet_sha256='2'*64
+    got=r.predict(p,tasks=('ar','od'))
+    assert got['ar_packet_sha256']==got['od_packet_sha256']=='2'*64

@@ -54,5 +54,7 @@ class SharedReceiver:
                 if any(not finite_detection(d) for d in detections.values()): raise ValueError('nonfinite received detections')
                 preds['od']=detections; preds['od_packet_sha256']=packet.packet_sha256; result['latency_seconds']['od']=secs
             self._cache.update(predictions=preds,latency_keys=list(result['latency_seconds'])); result.update(preds)
+        # Prediction reuse never reuses a different wire packet's identity.
+        for task in tasks: result[task+'_packet_sha256']=packet.packet_sha256
         sync(); result['total_prediction_seconds']=time.perf_counter()-start
         return result
