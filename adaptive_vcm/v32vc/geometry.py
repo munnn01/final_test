@@ -8,7 +8,9 @@ def _area_axis(source,target,reference):
     lo = torch.arange(target,device=reference.device,dtype=reference.dtype)*source/target
     hi = (torch.arange(target,device=reference.device,dtype=reference.dtype)+1)*source/target
     pixels = torch.arange(source,device=reference.device,dtype=reference.dtype)
-    return (torch.minimum(hi[:,None],pixels[None]+1)-torch.maximum(lo[:,None],pixels[None])).clamp_min(0)/(source/target)
+    weights = (torch.minimum(hi[:,None],pixels[None]+1)-torch.maximum(lo[:,None],pixels[None])).clamp_min(0)
+    # Float32 interval endpoints can drift: keep the weights a convex average.
+    return weights/weights.sum(1,keepdim=True)
 
 
 def _resize(x,size):
@@ -16,8 +18,11 @@ def _resize(x,size):
     if (h,w)==size: return x
     if dh<=h and dw<=w:
         rows,cols = _area_axis(h,dh,x),_area_axis(w,dw,x)
-        return torch.einsum('ih,nchw,jw->ncij',rows,x,cols)
-    return F.interpolate(x,size=size,mode='bilinear',align_corners=False)
+        pixels = torch.einsum('ih,nchw,jw->ncij',rows,x,cols)
+    else:
+        pixels = F.interpolate(x,size=size,mode='bilinear',align_corners=False)
+    # Accumulation can still overshoot by one ULP at white RGB pixels.
+    return pixels.clamp(0,1)
 
 
 def transform(video,grids,*,inverse=False):

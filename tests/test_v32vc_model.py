@@ -94,6 +94,21 @@ def test_fixed_grid_resampling_matches_receiver_and_passes_gradients():
     assert (rx-inverse_float).abs().max() <= 1/255+.00001
 
 
+@pytest.mark.parametrize('level',[0.,1.])
+@pytest.mark.parametrize('shape',[(110,154,56,78),(320,320,162,166)])
+def test_retarget_extreme_rgb_stays_bounded_for_virtual_codec(level,shape):
+    h,w,dh,dw = shape
+    grid = (Grid(0,1,(0,w),(0,dw),(0,h),(0,dh)),)
+    x = torch.full((1,3,1,h,w),level)
+    coded = transform(x,grid)
+    assert coded.min() >= 0 and coded.max() <= 1
+    assert torch.allclose(coded,x.new_full(coded.shape,level),atol=2e-7)
+    decoded,rate = VirtualCodec().eval()(coded,35,0)
+    restored = transform(decoded,grid,inverse=True)
+    assert restored.min() >= 0 and restored.max() <= 1
+    assert torch.isfinite(rate)
+
+
 @pytest.mark.parametrize('bad',[float('nan'),-1,52])
 def test_invalid_qp_fails(bad):
     x,p,m,c = inputs()
