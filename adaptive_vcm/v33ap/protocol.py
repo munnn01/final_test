@@ -51,4 +51,9 @@ def split_train(ids, task):
 def codec_factory(task, preset='medium'):
     if task not in ('ar','od') or preset not in ('medium','fast','ultrafast'):
         raise ValueError('invalid codec domain/preset')
-    return rf_codec_factory(task,preset)
+    from .codec import MeasuredCodec
+    from ..v32rf.protocol import execution
+    def create(codec,qp,base_preset='medium',fps=Fraction(25)):
+        e=execution(task,preset)
+        return MeasuredCodec(codec,qp,e['preset'],fps,gop_settings=e['gop_settings'])
+    return create

@@ -13,3 +13,7 @@ Task1: completed. Baseline RF bridge/VC model:22 passed. RED:8 intended missing-
 Task2: completed. RED:5 missing-module failures. GREEN:new sources/tasks + RF bridge/VC training,21 passed,16.32s,exit0. Separate AR and OD gradients reach the same head; teachers have no gradients, BN/modes restored, empty pseudo boxes finite, COCO does not invoke action. Canonical pixels and explicit repetition/effective letterbox scales verified.
 
 Task3: completed. RED:4 missing-module failures. GREEN:new training/checkpoint + RF training/bridge/VC training,38 passed,17.28s,exit0. Both actual codecs checked against independent packets and paid bpp; proxy backward reaches CNN. 960 unique source/codec/QP exposures per epoch; validation diagnostics preserve state. Rehashed split tampering and state corruption rejected.
+
+Task4: completed. RED:4 missing-module failures. Timing RED:missing last_times. GREEN:34 passed,45.53s,exit0 (new receiver/evaluate/codec + V32 selection/evaluate/RF evaluate/AT receiver). Full real 2-codec/5-QP/7-family OD grid:70 rows, exact paid accounting, independently decoded grids. Byte-exact standard streams retained while timing encode, independent decode and inverse separately, eliminating the unnecessary encoder-local RGB decode in the new path only.
+
+Task5: in progress. Payload RED:2 missing-module failures; native final whole-branch review pending.

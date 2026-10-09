@@ -19,6 +19,9 @@ class Action:
     def __init__(self): self.model = ActionModel(); self.calls = 0
     def logits(self,x): self.calls += 1; return self.model(x)
     def saliency(self,rgb): return np.zeros(rgb.shape[1:3],np.float32)
+    def probabilities(self,rgb):
+        from adaptive_vcm.v32vc.train import tensor
+        with torch.no_grad(): return self.logits(tensor(rgb,'cpu')).softmax(-1)[0].numpy()
 
 
 class Backbone(nn.Module):
@@ -44,6 +47,9 @@ class DetectorModel(nn.Module):
 class Detector:
     name = 'fake-detector'
     def __init__(self,empty=False): self.model = DetectorModel(empty)
+    def predict(self,rgb):
+        from adaptive_vcm.v32vc.train import tensor
+        with torch.no_grad(): return {k:v.numpy() for k,v in self.model([tensor(rgb,'cpu')[0,:,0]])[0].items()}
 
 
 def record(task='ar', t=3):
