@@ -1,6 +1,7 @@
 """Frozen task measurements with separate GT and source-consistency provenance."""
 import numpy as np
 import time
+from contextlib import contextmanager
 import torch
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
@@ -22,24 +23,48 @@ def detection_distance(reference,current):
     return float(np.mean(values))
 
 class Heads(TaskHeads):
-    def __init__(self,device,experiment):
-        super().__init__(device); self.experiment=experiment
+    def __init__(self,device,experiment,cfg=None):
+        self.cfg=cfg or {}
+        detector=None
+        if self.cfg.get('detector')=='resnet50':
+            from ..analyzers import DetectionAnalyzer
+            detector=DetectionAnalyzer('resnet50',device)
+        super().__init__(device,detector=detector); self.experiment=experiment
+        self.configure_detector()
+
+    def configure_detector(self):
         # Lock detector transform as well as weights; avoid expensive upsampling
         # of every low-resolution AR frame to 800px during candidate search.
         self.detector.model.transform.min_size=(320,)
         self.detector.model.transform.max_size=640
+        if getattr(self,'cfg',{}).get('detector_detections'):
+            self.detector.model.roi_heads.detections_per_img=self.cfg['detector_detections']
+
+    @contextmanager
+    def detector_resolution(self,rgb):
+        t=self.detector.model.transform; old=(t.min_size,t.max_size)
+        size=getattr(self,'cfg',{}).get('ot_detector_size')
+        try:
+            if size and min(rgb.shape[1:3])>=size: t.min_size=(size,); t.max_size=size
+            yield
+        finally: t.min_size,t.max_size=old
 
     def hashes(self):
         value=super().hashes(); value['od']['transform']={'min_size':[320],'max_size':640}
+        if self.cfg.get('ot_detector_size'):
+            value['od'].update(ot_transform={'min_size':[self.cfg['ot_detector_size']],'max_size':self.cfg['ot_detector_size']},
+                               detections_per_img=self.cfg['detector_detections'])
         return value
 
     @torch.no_grad()
     def detections(self,rgb):
         x=tensor(rgb,self.device)
         result=[]
-        for start in range(0,len(rgb),4):
-            values=self.detector.model([x[0,:,i] for i in range(start,min(start+4,len(rgb)))])
-            result.extend(prediction(v) for v in values)
+        batch=getattr(self,'cfg',{}).get('detector_batch',4)
+        with self.detector_resolution(rgb):
+            for start in range(0,len(rgb),batch):
+                values=self.detector.model([x[0,:,i] for i in range(start,min(start+batch,len(rgb)))])
+                result.extend(prediction(v) for v in values)
         return result
 
     @torch.no_grad()
@@ -64,13 +89,13 @@ class Heads(TaskHeads):
         r.diagnostic_teacher_seconds=time.perf_counter()-teacher_start
 
     @torch.no_grad()
-    def costs(self,rgb,r):
+    def costs(self,rgb,r,source_only=False):
         x=tensor(rgb,self.device); result=[None]*3
         if r.mask[0]:
             logits,f=ar_forward(self.action,x)
             target=torch.as_tensor(r.source_predictions['ar'],device=self.device)[None]
             value=.25*F.kl_div(logits.log_softmax(-1),target,reduction='batchmean')+.1*distance(f,r.source_features['ar'])
-            if r.task=='ar': value=value+F.cross_entropy(logits,torch.tensor([r.item['label']],device=self.device))
+            if r.task=='ar' and not source_only: value=value+F.cross_entropy(logits,torch.tensor([r.item['label']],device=self.device))
             result[0]=float(value)
         if r.mask[1]:
             indices=frame_indices(len(rgb))
@@ -90,5 +115,6 @@ class Heads(TaskHeads):
         if r.mask[2]:
             from .tracking import track_frames, tracking_cost
             frames=track_frames(self.detections(rgb))
-            result[2]=tracking_cost(frames,r.targets if r.task=='ot' else r.source_predictions['ot'],ground_truth=r.task=='ot')
+            use_gt=r.task=='ot' and not source_only
+            result[2]=tracking_cost(frames,r.targets if use_gt else r.source_predictions['ot'],ground_truth=use_gt)
         return result

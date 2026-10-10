@@ -11,19 +11,69 @@ from ..v33ap.evaluate import inverse_boxes,safe_curve
 from ..coco_metrics import coco_map,coco_box
 from .protocol import ACTIONS,codec_factory
 from .preprocessing import region_maps,filter_clip
-from .learning import select_action
+from .learning import select_action,domain_calibration
 from .runner import condition,input_pair,infer,write_json
 
-def choose_packet(model,pair,codec_name,qp,mask,cfg,anchor,encode):
-    """Only learned predictions, calibrated bounds and measured bytes enter here."""
-    out=infer(model,pair,condition(codec_name,qp,mask,cfg))
+def tracking_curve(anchor,adaptive):
+    """TrackEval percent -> fraction exactly once for generic quality helpers."""
+    a={**anchor,'quality':(np.asarray(anchor['quality'],float)/100).tolist()}
+    b={**adaptive,'quality':(np.asarray(adaptive['quality'],float)/100).tolist()}
+    result=safe_curve(a,b)
+    monotone=result.get('quality_monotone_by_rate',{})
+    reliable=all(monotone.get(k,False) for k in ('anchor','adaptive')) and not result.get('invalid_reason')
+    result.update(quality_unit='HOTA percentage points',bd_reliable=reliable)
+    if not all(monotone.get(k,False) for k in ('anchor','adaptive')):
+        result.update(bd_rate_pct=None,pchip_bd_rate_pct=None,bd_quality_pp=None,
+                      invalid_reason='nonmonotone HOTA/rate curve; use raw same-QP metrics',
+                      point_passes=False,screen_passes=False)
+    return result
+
+def source_guard_choice(rates,costs,mask,limits,budget):
+    """Measured excess source-consistency cost, never GT accuracy/HOTA."""
+    rate=np.asarray(rates,float); values=np.array(costs,float); active=np.asarray(mask,bool)
+    limits=np.asarray(limits,float)
+    if values.shape!=(len(rate),3) or active.shape!=(3,) or not active.any() or limits.shape!=(3,):
+        raise ValueError('invalid real source guard table')
+    if not np.isfinite(values[0,active]).all() or rate[0]!=1: raise ValueError('invalid guard anchor')
+    delta=values-values[0]
+    feasible=np.isfinite(values[:,active]).all(1)&np.isfinite(rate)&(rate<=budget)&(rate>0)
+    feasible &= (delta[:,active]<=limits[active]).all(1)
+    # Measured rate is the objective; a consistency improvement breaks equal-rate ties.
+    score=rate+1e-6*np.nan_to_num(delta[:,active],nan=1e6).mean(1)
+    selected=int(np.argmin(np.where(feasible,score,np.inf)))
+    clean=lambda a:[[float(v) if np.isfinite(v) else None for v in row] for row in a]
+    return selected,dict(scope='source consistency; no task accuracy guarantee',limits=limits.tolist(),
+                         costs=clean(values),excess=clean(delta),rate=rate.tolist(),rejected=np.where(~feasible)[0].tolist())
+
+def choose_packet(model,pair,codec_name,qp,mask,cfg,anchor,encode,*,domain=None,source_score=None):
+    """CNN candidates; calibrated ablation or real decoded source-only guard."""
+    start=time.perf_counter(); out=infer(model,pair,condition(codec_name,qp,mask,cfg,domain=domain))
+    inference_seconds=time.perf_counter()-start
     forced=int(np.argmax(out['logits']))
-    selected=select_action(out['risk'],out['rate'],model.metadata['calibration'],mask,cfg['damage_tolerance'],cfg['budget_ratio'])
+    selected=select_action(out['risk'],out['rate'],domain_calibration(model.metadata['calibration'],domain),mask,cfg['damage_tolerance'],cfg['budget_ratio'])
+    calibrated=selected
+    if source_score is not None:
+        active=np.asarray(mask,bool)
+        rank=out['rate']+.25*np.maximum(out['risk'][:,active],0).mean(1)
+        candidates=[]
+        for action in [forced,*np.argsort(rank).tolist()]:
+            if action and action not in candidates: candidates.append(action)
+            if len(candidates)>=cfg['source_shortlist']: break
+        actions=[0,*candidates]; packets=[anchor,*[encode(a) for a in candidates]]
+        rates=[p.coded_bytes/anchor.coded_bytes for p in packets]
+        costs=[source_score(p.decoded) if rate<=cfg['budget_ratio'] else [None]*3 for p,rate in zip(packets,rates)]
+        choice,guard=source_guard_choice(rates,costs,mask,cfg['source_guard_limits'],cfg['budget_ratio'])
+        guard['rejected']=[actions[i] for i in guard['rejected']]
+        return forced,actions[choice],packets[choice],dict(predicted_risk=out['risk'],predicted_rate=out['rate'],
+            proposed_action=actions[choice],calibrated_action=calibrated,rate_fallback=False,
+            tried_actions=actions,source_guard=guard,controller_inference_seconds=inference_seconds,
+            selection_policy='CNN shortlist + real decoded source guard')
     proposed=selected
     packet=anchor if selected==0 else encode(selected)
     fallback=packet.coded_bytes>anchor.coded_bytes*cfg['budget_ratio']
     if fallback: selected=0; packet=anchor
-    return forced,selected,packet,dict(predicted_risk=out['risk'],predicted_rate=out['rate'],proposed_action=proposed,rate_fallback=fallback)
+    return forced,selected,packet,dict(predicted_risk=out['risk'],predicted_rate=out['rate'],proposed_action=proposed,
+                                     calibrated_action=calibrated,rate_fallback=fallback,tried_actions=[0]+([proposed] if proposed else []))
 
 @torch.no_grad()
 def received_predictions(packet,heads,transfer_ar,transfer_od,task):
@@ -112,6 +162,11 @@ def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
             maps=region_maps(source.rgb,source.source_predictions['od']); pair=input_pair(source.rgb,maps)
             support_seconds=source.source_detector_seconds+time.perf_counter()-map_start
             source_seconds=time.perf_counter()-start
+            if r.task=='ot' and cfg.get('revision')=='arot-r1':
+                from .tracking import ByteTracker,track_frames
+                key=('clean',0,'source',r.item['sequence'])
+                if key not in trackers: trackers[key]=ByteTracker(); tracks[key]=[]
+                tracks[key].extend(track_frames(source.source_predictions['od'],trackers[key]))
             for codec_name in cfg['codecs']:
                 for qp in cfg['qps']:
                     codec=codec_factory(r.task,codec_name,qp,cfg); packets={}; timings={}; predictions={}
@@ -121,12 +176,24 @@ def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
                             packets[action]=codec.roundtrip(pixels,source_shape=r.rgb.shape,task=r.task)
                             timings[action]=dict(preprocess_seconds=pre,**codec.last_times,q8_edits=int(np.count_nonzero(pixels!=r.rgb)))
                         return packets[action]
+                    guard_costs={}; guard_times={}
+                    def source_score(rgb):
+                        sha=hashlib.sha256(rgb.tobytes()).hexdigest()
+                        if sha not in guard_costs:
+                            begin=time.perf_counter(); guard_costs[sha]=heads.costs(rgb,source,source_only=True)
+                            guard_times[sha]=time.perf_counter()-begin
+                        return guard_costs[sha]
                     anchor=encode(0); arms={'anchor':(0,anchor,{}),'fixed':(cfg['fixed_action'],encode(cfg['fixed_action']),{})}
                     for model in models:
-                        start=time.perf_counter(); forced,selected,p,details=choose_packet(model,pair,codec_name,qp,source.mask,cfg,anchor,encode)
+                        start=time.perf_counter(); forced,selected,p,details=choose_packet(model,pair,codec_name,qp,source.mask,cfg,anchor,encode,
+                            domain=source.task,source_score=source_score if cfg.get('source_guard_limits') else None)
                         details['selection_seconds']=time.perf_counter()-start
                         seed=model.metadata['seed']; arms[f'forced_{seed}']=(forced,encode(forced),{**details,'rate_fallback':False})
                         arms[f'selected_{seed}']=(selected,p,details)
+                        if cfg.get('source_guard_limits'):
+                            calibrated=details['calibrated_action']; cp=encode(calibrated)
+                            fallback=cp.coded_bytes>anchor.coded_bytes*cfg['budget_ratio']
+                            arms[f'calibrated_{seed}']=(0 if fallback else calibrated,anchor if fallback else cp,{'rate_fallback':fallback})
                     for arm,(action,packet,details) in arms.items():
                         sha=packet.packet_sha256
                         if sha not in predictions:
@@ -140,9 +207,20 @@ def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
                             support_seconds=support_seconds,diagnostic_teacher_seconds=source.diagnostic_teacher_seconds,
                             receiver_seconds=pred['receiver_seconds'],**timings[action],**details)
                         if arm.startswith('selected_'):
-                            proposed=details['proposed_action']
-                            row['deployed_encode_seconds']=timings[0]['encode_seconds']+(timings[proposed]['encode_seconds'] if proposed else 0.)
-                            row['deployed_encode_count']=1+int(proposed!=0)
+                            tried=details['tried_actions']
+                            row['deployed_candidate_work']=[dict(action=a,**timings[a]) for a in tried]
+                            row['deployed_encode_seconds']=sum(timings[a]['encode_seconds'] for a in tried)
+                            row['deployed_encode_count']=len(tried)
+                            row['deployed_preprocess_seconds']=sum(timings[a]['preprocess_seconds'] for a in tried)
+                            row['deployed_probe_decode_seconds']=sum(timings[a]['decode_seconds'] for a in tried)
+                            row['deployed_probe_inverse_seconds']=sum(timings[a]['inverse_seconds'] for a in tried)
+                            hashes={hashlib.sha256(packets[a].decoded.tobytes()).hexdigest() for a in tried}
+                            row['deployed_source_guard_seconds']=sum(guard_times.get(sha,0.) for sha in hashes)
+                            row['deployed_sender_seconds']=source_seconds+details.get('controller_inference_seconds',0.)+sum(
+                                row[k] for k in ('deployed_encode_seconds','deployed_preprocess_seconds','deployed_probe_decode_seconds',
+                                                 'deployed_probe_inverse_seconds','deployed_source_guard_seconds'))
+                            row['standalone_benchmark_seconds']=row['deployed_sender_seconds']+pred['receiver_seconds']
+                            row['timing_scope']='independent candidate work + source references + CNN; receiver includes transfer evaluator; cache wall-time differs'
                         if r.task=='ar':
                             row['correct']={n:int(np.argmax(p)==r.item['label']) for n,p in pred['ar'].items()}
                             if heads.experiment=='ar_od':
@@ -179,6 +257,8 @@ def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
             write_json(metrics_out/'ground_truth_provenance.json',stage_ground_truth(plan,metrics_out/'ground_truth'))
             metrics=evaluate_mot(load_trackeval(trackeval_path),plan,metrics_out,sorted(set(names)))
             summary['ot_official_metrics']=metrics
+            if 'clean_0_source' in metrics: summary['clean_source_tracking']=metrics['clean_0_source']
+            summary['ot_quality_unit']='raw curves: HOTA percent; comparisons: percentage points'
             summary['ot_curves']={}
             for codec in cfg['codecs']:
                 curves={}
@@ -188,5 +268,5 @@ def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
                         sub=[r for r in rows if r['task']=='ot' and r['codec']==codec and r['qp']==qp and r['arm']==arm]
                         curves[arm]['bpp'].append(float(np.mean([r['bpp'] for r in sub])))
                         curves[arm]['quality'].append(metrics[f'{codec}_{qp}_{arm}']['combined']['HOTA'])
-                summary['ot_curves'][codec]=dict(curves=curves,comparisons={a:safe_curve(curves['anchor'],c) for a,c in curves.items() if a!='anchor'})
+                summary['ot_curves'][codec]=dict(curves=curves,comparisons={a:tracking_curve(curves['anchor'],c) for a,c in curves.items() if a!='anchor'})
         write_json(out/f'{split}_summary.json',summary)

@@ -15,11 +15,16 @@ def targets(rate,damage,mask,tolerance,budget):
     score=rate+.25*np.nan_to_num(damage[:,mask]).mean(1)
     return int(np.argmin(np.where(valid,score,np.inf)))
 
-def masked_loss(prediction,target,mask):
+def masked_loss(prediction,target,mask,scale=None):
     active=mask[:,None,:].expand_as(prediction)
     if not active.any(): raise ValueError('empty supervised task mask')
     if not torch.isfinite(target[active]).all(): raise ValueError('nonfinite active task target')
-    return (prediction[active]-target[active]).square().mean()
+    if scale is None: return (prediction[active]-target[active]).square().mean()
+    scale=torch.as_tensor(scale,device=prediction.device,dtype=prediction.dtype)
+    if scale.shape!=(3,) or not (scale>0).all(): raise ValueError('positive task scales required')
+    # Dimensionless residuals avoid fitting AR CE and track counts on one scale.
+    # Huber limits outlier dominance without clipping the measured risk targets.
+    return F.smooth_l1_loss((prediction/scale)[active],(target/scale)[active])
 
 def calibrate(predicted,actual,rate_pred,rate_actual,mask,coverage):
     p,a=np.asarray(predicted),np.asarray(actual)
@@ -50,6 +55,24 @@ def select_action(risk,rate,calibration,mask,tolerance,budget):
     score=rate+.25*risk[:,mask].mean(1)
     return int(np.argmin(np.where(feasible,score,np.inf))) if feasible.any() else 0
 
+def calibrate_domains(rows,predictions,coverage):
+    domains={}
+    for domain in sorted({r['domain'] for r in rows}):
+        ids=[i for i,r in enumerate(rows) if r['domain']==domain]
+        selected=[rows[i] for i in ids]; pred=[predictions[i] for i in ids]
+        value=calibrate(np.array([p['risk'] for p in pred]),np.array([r['damage'] for r in selected],float),
+                        np.array([p['rate'] for p in pred]),np.array([r['rate'] for r in selected]),
+                        np.array([r['mask'] for r in selected],bool),coverage)
+        value['source_count']=len({r.get('id',str(i)) for i,r in enumerate(selected)})
+        domains[domain]=value
+    return dict(domains=domains,count=len(rows),coverage=coverage,
+                scope='domain-specific empirical CAL residuals; correlated QP/window rows; no coverage guarantee')
+
+def domain_calibration(calibration,domain):
+    if 'domains' not in calibration: return calibration
+    if domain not in calibration['domains']: raise ValueError('missing domain calibration')
+    return calibration['domains'][domain]
+
 def train_controller(model,rows,inputs,cfg,device):
     optimizer=torch.optim.Adam(model.parameters(),lr=cfg['lr']); history=[]
     model.to(device).train()
@@ -71,7 +94,7 @@ def train_controller(model,rows,inputs,cfg,device):
             x=torch.stack([inputs[rows[i]['id']][0] for i in ids]).to(device)
             m=torch.stack([inputs[rows[i]['id']][1] for i in ids]).to(device)
             out=model(x,m,c[batch])
-            loss=F.cross_entropy(out['logits'],labels[batch])+4*masked_loss(out['risk'],damage[batch],mask[batch])+4*F.mse_loss(out['rate'],rate[batch])
+            loss=F.cross_entropy(out['logits'],labels[batch])+4*masked_loss(out['risk'],damage[batch],mask[batch],cfg.get('risk_scale'))+4*F.mse_loss(out['rate'],rate[batch])
             if not torch.isfinite(loss): raise ValueError('nonfinite controller loss')
             optimizer.zero_grad(); loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),5); optimizer.step()
             values.append(float(loss.detach()))

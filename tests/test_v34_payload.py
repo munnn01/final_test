@@ -14,10 +14,10 @@ def fixture_source():
         source_files_sha256={'configs/v34.json':hashlib.sha256(config).hexdigest()})
     return bundle,origin,{}
 
-@pytest.mark.parametrize('experiment',['ar_od','ar_ot'])
-def test_public_notebook_is_exact_recipe_and_compiles_with_secret_free_members(tmp_path,monkeypatch,experiment):
+@pytest.mark.parametrize('experiment,recipe',[('ar_od','original'),('ar_ot','original'),('ar_ot','arot-r1')])
+def test_public_notebook_is_exact_recipe_and_compiles_with_secret_free_members(tmp_path,monkeypatch,experiment,recipe):
     monkeypatch.setattr(payload,'source_snapshot',fixture_source)
-    receipt=payload.prepare(experiment,'fixture',tmp_path)
+    receipt=payload.prepare(experiment,'fixture',tmp_path,recipe=recipe)
     assert payload.validate_payload(tmp_path)==receipt
     nb=json.loads((tmp_path/'notebook.ipynb').read_text())
     for cell in nb['cells']: compile(''.join(cell['source']),'<notebook>','exec')

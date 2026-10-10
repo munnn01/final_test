@@ -25,8 +25,12 @@ def input_pair(rgb,maps):
         return F.interpolate(t,(48,48),mode='bilinear',align_corners=False)
     return prepare(rgb)/255,prepare(maps)
 
-def condition(codec,qp,mask,cfg):
-    return [float(codec=='h265'),qp/51,*map(float,mask),cfg['budget_ratio']]
+def condition(codec,qp,mask,cfg,domain=None):
+    value=[float(codec=='h265'),qp/51,*map(float,mask),cfg['budget_ratio']]
+    if cfg.get('domain_condition'):
+        if domain not in ('ar','od','ot'): raise ValueError('source domain required')
+        value += [float(domain==d) for d in ('ar','od','ot')]
+    return value
 
 def measure_candidates(rgb,maps,actions,codec,task,score):
     rows=[]; costs=[]; sizes=[]
@@ -65,11 +69,15 @@ def train_models(cache,inputs,cfg,out,device,task_models):
         records=[dict(id=r['id'],codec=r.get('codec'),qp=r.get('qp'),action=a) for r,a in zip(fit,choices)]))
     for seed in cfg['seeds']:
         torch.manual_seed(seed); np.random.seed(seed)
-        model=Controller(len(ACTIONS)); history=train_controller(model,fit,inputs,cfg,device)
+        model=Controller(len(ACTIONS),conditions=9 if cfg.get('domain_condition') else 6); history=train_controller(model,fit,inputs,cfg,device)
         pred=[infer(model,inputs[r['id']],r['condition']) for r in cal]
         actual=np.array([r['damage'] for r in cal],float)
-        calibration=calibrate(np.array([p['risk'] for p in pred]),actual,np.array([p['rate'] for p in pred]),
-            np.array([r['rate'] for r in cal]),np.array([r['mask'] for r in cal],bool),cfg['cal_coverage'])
+        if cfg.get('domain_condition'):
+            from .learning import calibrate_domains
+            calibration=calibrate_domains(cal,pred,cfg['cal_coverage'])
+        else:
+            calibration=calibrate(np.array([p['risk'] for p in pred]),actual,np.array([p['rate'] for p in pred]),
+                np.array([r['rate'] for r in cal]),np.array([r['mask'] for r in cal],bool),cfg['cal_coverage'])
         meta=dict(seed=seed,settings=cfg,actions=[list(a) for a in ACTIONS],experiment=cache['experiment'],
             source_commit=cache['origin']['origin_commit'],source_archive_sha256=cache['origin']['bundle_sha256'],
             cache_sha256=cache['sha256'],sources=cache['sources'],task_models=task_models,calibration=calibration,
@@ -82,7 +90,8 @@ def run(args):
     from .sources import cohorts
     from .tasks import Heads
     from .evaluation import evaluate
-    cfg=settings(); out=Path(args.out)
+    cfg=settings(getattr(args,'config',None)); out=Path(args.out)
+    if cfg.get('revision')=='arot-r1' and args.experiment!='ar_ot': raise ValueError('AR+OT repair recipe only')
     if out.exists() and any(out.iterdir()): raise ValueError('immutable empty output required')
     out.mkdir(parents=True,exist_ok=True); device='cuda' if torch.cuda.is_available() else 'cpu'
     torch.set_num_threads(2)
@@ -93,7 +102,7 @@ def run(args):
         ot_groups,ot_plan=tracking_sources(Path(args.mot_root),cfg)
         for split in groups: groups[split]+=ot_groups[split]
         meta['ot']=ot_plan
-    heads=Heads(device,args.experiment); task_models=heads.hashes()
+    heads=Heads(device,args.experiment,cfg); task_models=heads.hashes()
     sources={}; hashes=set()
     for split,records in groups.items():
         for r in records:
@@ -111,8 +120,8 @@ def run(args):
                 for qp in cfg['qps']:
                     c=codec_factory(r.task,codec,qp,cfg)
                     table=measure_candidates(r.rgb,maps,ACTIONS,c,r.task,lambda rgb:heads.costs(rgb,r))
-                    cache['rows'].append(dict(id=r.id,split=split,codec=codec,qp=qp,mask=r.mask,
-                        provenance=r.provenance,condition=condition(codec,qp,r.mask,cfg),**table))
+                    cache['rows'].append(dict(id=r.id,split=split,domain=r.task,codec=codec,qp=qp,mask=r.mask,
+                        provenance=r.provenance,condition=condition(codec,qp,r.mask,cfg,domain=r.task),**table))
             write_json(out/'measurements.partial.json',cache)
             print(f'V34 {args.experiment} cache {split} {index+1}/{len(groups[split])}',flush=True)
     cache['sha256']=digest(cache); write_json(out/'measurements.json',cache)
@@ -125,6 +134,7 @@ def run(args):
 
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--experiment',choices=['ar_od','ar_ot'],required=True)
+    p.add_argument('--config')
     for key in ('ar_root','od_root','annotations','mot_root','trackeval','origin','out'): p.add_argument('--'+key.replace('_','-'),required=key in ('ar_root','origin','out'))
     run(p.parse_args())
 

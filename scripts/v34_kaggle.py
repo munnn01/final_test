@@ -10,18 +10,22 @@ from scripts.v32_mot20_kaggle import source_snapshot,safe_extract,HF_REPO,HF_REV
 from scripts.v32vc_kaggle import mount_data
 from scripts.v32rf_kaggle import serialized_source_bytes
 from scripts.v33ap_kaggle import pack,unpack,stored_source,REQUIRED,OPTIONAL
-from adaptive_vcm.v34.protocol import settings,ACTIONS
+from adaptive_vcm.v34.protocol import settings,ACTIONS,ROOT
 
-def job_spec(experiment,account,origin):
+def job_spec(experiment,account,origin,recipe='original'):
     if experiment not in ('ar_od','ar_ot') or not re.fullmatch('[a-zA-Z0-9_-]+',account) or not re.fullmatch('[0-9a-f]{40}',origin['origin_commit']):
         raise ValueError('invalid job/account/origin')
-    slug='v34-'+experiment.replace('_','-')+'-'+origin['origin_commit'][:8]
-    return dict(schema='v34-kaggle-1',experiment=experiment,slug=slug,handle=account+'/'+slug,private=False,
-        origin_commit=origin['origin_commit'],protocol=settings(),actions=[list(a) for a in ACTIONS],
+    if recipe not in ('original','arot-r1') or recipe=='arot-r1' and experiment!='ar_ot': raise ValueError('invalid repair recipe')
+    slug='v34-'+experiment.replace('_','-')+('-r1' if recipe=='arot-r1' else '')+'-'+origin['origin_commit'][:8]
+    config='configs/v34_arot_r1.json' if recipe=='arot-r1' else None
+    job=dict(schema='v34-kaggle-1',experiment=experiment,slug=slug,handle=account+'/'+slug,private=False,
+        origin_commit=origin['origin_commit'],protocol=settings(ROOT/config if config else None),actions=[list(a) for a in ACTIONS],
         datasets=['qktttttttttt/kineticscleaned']+(['awsaf49/coco-2017-dataset'] if experiment=='ar_od' else []),
         hf=dict(repo_id=HF_REPO,revision=HF_REVISION),sequences=['MOT20-02','MOT20-03','MOT20-01'],
         trackeval_repo=TRACKEVAL_REPO,trackeval_commit=TRACKEVAL_COMMIT,
         scope='actual-codec supervised adaptive filtering; three seeds; exploratory domain pilot; no confirmed gain; MOT20 AR has no GT')
+    if config: job.update(recipe=recipe,config_path=config,scope=job['scope']+'; source-only real-codec guard is not a task-accuracy guarantee')
+    return job
 
 RUNTIME=r'''
 import os,random,shutil,sys,tarfile,traceback
@@ -55,10 +59,12 @@ try:
     (OUT/'installed-packages.txt').write_text(subprocess.check_output([sys.executable,'-m','pip','freeze'],text=True))
     sys.path.insert(0,str(REPO))
     from adaptive_vcm.v34.protocol import settings,ACTIONS
-    if settings()!=JOB['protocol'] or [list(a) for a in ACTIONS]!=JOB['actions']: raise ValueError('runtime recipe drift')
+    config=REPO/JOB['config_path'] if JOB.get('config_path') else None
+    if settings(config)!=JOB['protocol'] or [list(a) for a in ACTIONS]!=JOB['actions']: raise ValueError('runtime recipe drift')
     ar_root,_=mount_data(Path('/kaggle/input'),'ar')
     command=[sys.executable,'-u','-m','adaptive_vcm.v34.runner','--experiment',JOB['experiment'],'--ar-root',str(ar_root),
         '--origin',str(OUT/'source-origin.json'),'--out',str(OUT/'experiment')]
+    if config: command+=['--config',str(config)]
     if JOB['experiment']=='ar_od':
         od_root,ann=mount_data(Path('/kaggle/input'),'od')
         command+=['--od-root',str(od_root),'--annotations',str(ann)]
@@ -107,11 +113,11 @@ def build_notebook(members,job):
         enable_gpu=True,enable_internet=True,dataset_sources=job['datasets'],kernel_sources=[],competition_sources=[],model_sources=[])
     return nb,meta
 
-def prepare(experiment,account,out):
+def prepare(experiment,account,out,recipe='original'):
     out=Path(out)
     if out.exists() and any(out.iterdir()): raise FileExistsError('immutable empty payload required')
     bundle,origin,_=source_snapshot(); bundle,origin=stored_source(bundle,origin)
-    job=job_spec(experiment,account,origin)
+    job=job_spec(experiment,account,origin,recipe)
     members={'source.zip':bundle,'origin.json':json.dumps(origin).encode(),'job.json':json.dumps(job).encode()}
     nb,meta=build_notebook(members,job); out.mkdir(parents=True,exist_ok=True)
     for name,value in [('notebook.ipynb',nb),('kernel-metadata.json',meta),('job.json',job),('origin-manifest.json',origin)]:
@@ -131,7 +137,7 @@ def validate_payload(directory):
     members=unpack(values[0])
     if set(members)!=REQUIRED or hashlib.sha256(members['source.zip']).hexdigest()!=origin['bundle_sha256'] or json.loads(members['origin.json'])!=origin:
         raise ValueError('source origin mismatch')
-    if job!=job_spec(job['experiment'],job['handle'].split('/')[0],origin): raise ValueError('job recipe drift')
+    if job!=job_spec(job['experiment'],job['handle'].split('/')[0],origin,job.get('recipe','original')): raise ValueError('job recipe drift')
     expected,meta=build_notebook(members,job)
     if nb!=expected or json.loads((directory/'kernel-metadata.json').read_text())!=meta: raise ValueError('notebook/metadata drift')
     return receipt
@@ -155,6 +161,7 @@ def submit(client,account,directory):
 
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--experiment',choices=['ar_od','ar_ot'],required=True); p.add_argument('--account',required=True); p.add_argument('--out',type=Path,required=True)
-    a=p.parse_args(); print(json.dumps(prepare(a.experiment,a.account,a.out)))
+    p.add_argument('--recipe',choices=['original','arot-r1'],default='original')
+    a=p.parse_args(); print(json.dumps(prepare(a.experiment,a.account,a.out,a.recipe)))
 
 if __name__=='__main__': main()
