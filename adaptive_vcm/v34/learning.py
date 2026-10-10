@@ -53,17 +53,24 @@ def select_action(risk,rate,calibration,mask,tolerance,budget):
 def train_controller(model,rows,inputs,cfg,device):
     optimizer=torch.optim.Adam(model.parameters(),lr=cfg['lr']); history=[]
     model.to(device).train()
-    x=torch.stack([inputs[r['id']][0] for r in rows]).to(device)
-    m=torch.stack([inputs[r['id']][1] for r in rows]).to(device)
+    groups={}
+    for i,r in enumerate(rows):
+        groups.setdefault(inputs[r['id']][0].shape[0],[]).append(i)
     c=torch.tensor([r['condition'] for r in rows],device=device,dtype=torch.float32)
     rate=torch.tensor([r['rate'] for r in rows],device=device,dtype=torch.float32)
     damage=torch.tensor([[[float('nan') if v is None else v for v in a] for a in r['damage']] for r in rows],device=device,dtype=torch.float32)
     mask=torch.tensor([r['mask'] for r in rows],device=device,dtype=torch.bool)
     labels=torch.tensor([targets(r['rate'],np.array(r['damage'],float),r['mask'],cfg['damage_tolerance'],cfg['budget_ratio']) for r in rows],device=device)
     for epoch in range(cfg['epochs']):
-        order=torch.randperm(len(rows),device=device); values=[]
-        for batch in order.split(16):
-            out=model(x[batch],m[batch],c[batch])
+        batches=[]; values=[]
+        for group in groups.values():
+            indices=torch.tensor(group)[torch.randperm(len(group))]
+            batches.extend(indices.split(16))
+        for index in torch.randperm(len(batches)).tolist():
+            ids=batches[index].tolist(); batch=batches[index].to(device)
+            x=torch.stack([inputs[rows[i]['id']][0] for i in ids]).to(device)
+            m=torch.stack([inputs[rows[i]['id']][1] for i in ids]).to(device)
+            out=model(x,m,c[batch])
             loss=F.cross_entropy(out['logits'],labels[batch])+4*masked_loss(out['risk'],damage[batch],mask[batch])+4*F.mse_loss(out['rate'],rate[batch])
             if not torch.isfinite(loss): raise ValueError('nonfinite controller loss')
             optimizer.zero_grad(); loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),5); optimizer.step()

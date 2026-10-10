@@ -19,10 +19,11 @@ def choose_packet(model,pair,codec_name,qp,mask,cfg,anchor,encode):
     out=infer(model,pair,condition(codec_name,qp,mask,cfg))
     forced=int(np.argmax(out['logits']))
     selected=select_action(out['risk'],out['rate'],model.metadata['calibration'],mask,cfg['damage_tolerance'],cfg['budget_ratio'])
+    proposed=selected
     packet=anchor if selected==0 else encode(selected)
     fallback=packet.coded_bytes>anchor.coded_bytes*cfg['budget_ratio']
     if fallback: selected=0; packet=anchor
-    return forced,selected,packet,dict(predicted_risk=out['risk'],predicted_rate=out['rate'],rate_fallback=fallback)
+    return forced,selected,packet,dict(predicted_risk=out['risk'],predicted_rate=out['rate'],proposed_action=proposed,rate_fallback=fallback)
 
 @torch.no_grad()
 def received_predictions(packet,heads,transfer_ar,transfer_od,task):
@@ -82,6 +83,14 @@ def summaries(rows,groups,meta,cfg,split):
                 draws=delta[rng.integers(0,len(delta),(1000,len(delta)))].mean(1)
                 ci[codec][arm][qp]=dict(delta_pp=float(delta.mean()*100),lo_pp=float(np.quantile(draws,.025)*100),hi_pp=float(np.quantile(draws,.975)*100))
     return dict(split=split,scope='exploratory historical pilot; no same-video joint GT on K400+COCO/MOT20',results=result,
+        secondary_source_consistency={f'{domain}/{codec}/{qp}/{arm}':{
+            metric:float(np.mean([r[metric] for r in rows if r['task']==domain and r['codec']==codec and r['qp']==qp and r['arm']==arm and metric in r]))
+            for metric in ('od_source_distance','ot_source_cost','ar_source_kl')
+            if any(r['task']==domain and r['codec']==codec and r['qp']==qp and r['arm']==arm and metric in r for r in rows)}
+            for domain in ('ar','ot') for codec in cfg['codecs'] for qp in cfg['qps'] for arm in all_arms},
+        selection_counts={a:dict(total=sum(r['arm']==a for r in rows),identity=sum(r['arm']==a and r['action']==0 for r in rows),
+            rate_fallback=sum(r['arm']==a and r.get('rate_fallback',False) for r in rows),
+            q8_changed=sum(r['arm']==a and r['q8_edits']>0 for r in rows)) for a in all_arms},
         ar_paired_same_qp_ci=ci,bootstrap_draws=1000,od_ci=None,ot_sequence_ci=None,
         uncertainty_limit='OD curves need larger paired bootstrap; one OT sequence per held-out split prevents a sequence CI',
         rate_scope='paid stream plus common header / canonical pixels; encoder-only maps are not transmitted',target_confirmed=False)
@@ -99,7 +108,9 @@ def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
             # remain in the outer record for scoring after stream selection.
             source=SourceRecord(r.id,r.task,{k:v for k,v in r.item.items() if k!='label'},r.rgb,r.geometry,r.frame_recipe)
             start=time.perf_counter(); heads.source(source)
+            map_start=time.perf_counter()
             maps=region_maps(source.rgb,source.source_predictions['od']); pair=input_pair(source.rgb,maps)
+            support_seconds=source.source_detector_seconds+time.perf_counter()-map_start
             source_seconds=time.perf_counter()-start
             for codec_name in cfg['codecs']:
                 for qp in cfg['qps']:
@@ -114,7 +125,7 @@ def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
                     for model in models:
                         start=time.perf_counter(); forced,selected,p,details=choose_packet(model,pair,codec_name,qp,source.mask,cfg,anchor,encode)
                         details['selection_seconds']=time.perf_counter()-start
-                        seed=model.metadata['seed']; arms[f'forced_{seed}']=(forced,encode(forced),details)
+                        seed=model.metadata['seed']; arms[f'forced_{seed}']=(forced,encode(forced),{**details,'rate_fallback':False})
                         arms[f'selected_{seed}']=(selected,p,details)
                     for arm,(action,packet,details) in arms.items():
                         sha=packet.packet_sha256
@@ -126,8 +137,22 @@ def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
                             packet_sha256=sha,shared_packet=True,decoded_sha256=hashlib.sha256(packet.decoded.tobytes()).hexdigest(),
                             bytes=packet.coded_bytes,elementary_bytes=packet.elementary_bytes,metadata_bytes=packet.metadata_bytes,
                             bpp=packet.coded_bytes*8/np.prod(r.rgb.shape[:3]),source_seconds=source_seconds,
+                            support_seconds=support_seconds,diagnostic_teacher_seconds=source.diagnostic_teacher_seconds,
                             receiver_seconds=pred['receiver_seconds'],**timings[action],**details)
-                        if r.task=='ar': row['correct']={n:int(np.argmax(p)==r.item['label']) for n,p in pred['ar'].items()}
+                        if arm.startswith('selected_'):
+                            proposed=details['proposed_action']
+                            row['deployed_encode_seconds']=timings[0]['encode_seconds']+(timings[proposed]['encode_seconds'] if proposed else 0.)
+                            row['deployed_encode_count']=1+int(proposed!=0)
+                        if r.task=='ar':
+                            row['correct']={n:int(np.argmax(p)==r.item['label']) for n,p in pred['ar'].items()}
+                            if heads.experiment=='ar_od':
+                                from .tasks import detection_distance
+                                from ..v33ap.tasks import frame_indices
+                                row['od_source_distance']=detection_distance([source.source_predictions['od'][i] for i in frame_indices(len(r.rgb))],pred['od_consistency'])
+                            else:
+                                from .tracking import track_frames,tracking_cost
+                                if 'ot_frames' not in pred: pred['ot_frames']=track_frames(pred['ot_detections'])
+                                row['ot_source_cost']=tracking_cost(pred['ot_frames'],source.source_predictions['ot'])
                         elif r.task=='od': row['coco']=coco_predictions(pred['od'],r.item,r.geometry)
                         elif r.task=='ot':
                             from .tracking import ByteTracker,track_frames

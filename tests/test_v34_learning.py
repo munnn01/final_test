@@ -52,3 +52,13 @@ def test_three_seed_training_freezes_cal_and_roundtrips_native_metadata(tmp_path
     assert len(models)==3 and len({m.checkpoint_sha256 for m in models})==3
     assert all(m.metadata['calibration']['count']==1 for m in models)
     assert all(len(m.metadata['training_history'])==1 for m in models)
+
+def test_controller_trains_single_images_and_video_without_temporal_padding():
+    from adaptive_vcm.v34.learning import train_controller
+    cfg={'epochs':1,'lr':.001,'damage_tolerance':[.05]*3,'budget_ratio':1.01}
+    inputs={k:(torch.rand(t,3,12,12),torch.ones(t,3,12,12)/3) for k,t in [('image',1),('clip',16)]}
+    rows=[dict(id=k,condition=[0.,.7,float(k=='clip'),1.,0.,1.01],mask=[int(k=='clip'),1,0],
+        rate=[1.,.9,1.],damage=[[0 if k=='clip' else None,0.,None],
+        [0 if k=='clip' else None,0.,None],[0 if k=='clip' else None,0.,None]]) for k in inputs]
+    history=train_controller(Controller(3),rows,inputs,cfg,'cpu')
+    assert len(history)==1 and np.isfinite(history[0]['loss'])

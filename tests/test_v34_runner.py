@@ -5,6 +5,7 @@ from adaptive_vcm.v34.sources import split_training
 from adaptive_vcm.v34.runner import measure_candidates, validate_cache
 from adaptive_vcm.v34.protocol import codec_factory, settings
 from adaptive_vcm.data import partition
+import torch
 
 def test_training_calibration_split_rejects_held_out_and_duplicates():
     items=[{'id':str(i)} for i in range(300) if partition('coco2017/'+str(i))=='train'][:64]
@@ -40,3 +41,20 @@ def test_cache_validation_binds_source_pixels_and_prevents_test_supervision():
     validate_cache(cache)
     cache['sources']['ar/a']['split']='test'
     with pytest.raises(ValueError): validate_cache(cache)
+
+def test_selection_measures_real_bytes_and_falls_back_without_ground_truth():
+    from adaptive_vcm.v34.evaluation import choose_packet
+    from adaptive_vcm.v32.codec import Packet
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__(); self.weight=torch.nn.Parameter(torch.zeros(()))
+            self.metadata={'calibration':{'risk':[[0]*3]*2,'rate':[0,0]}}
+        def forward(self,x,m,c):
+            return dict(logits=torch.tensor([[0.,1.]]),risk=torch.tensor([[[0.,0.,0.],[0.,-.2,0.]]]),rate=torch.tensor([[1.,.8]]))
+    rgb=np.zeros((1,8,8,3),np.uint8)
+    anchor=Packet(b'a'*100,rgb,rgb.shape,60,40,0.)
+    oversized=Packet(b'b'*102,rgb,rgb.shape,62,40,0.)
+    pair=(torch.zeros(1,3,8,8),torch.ones(1,3,8,8)/3)
+    forced,selected,packet,details=choose_packet(Model(),pair,'h264',35,[0,1,0],settings(),anchor,lambda a:oversized)
+    assert forced==1 and selected==0 and packet is anchor
+    assert details['rate_fallback'] and details['proposed_action']==1

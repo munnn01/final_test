@@ -1,5 +1,7 @@
 import numpy as np
 import pytest
+import os
+from pathlib import Path
 from adaptive_vcm.v34.tracking import ByteTracker, tracking_cost, ot_split
 from adaptive_vcm.v32.tracking import original_boxes
 
@@ -30,3 +32,18 @@ def test_ot_sequences_do_not_mix_training_and_test_and_cal_is_contiguous():
     assert ot_split('MOT20-02',176)=='train'
     assert ot_split('MOT20-02',193)=='cal'
     with pytest.raises(ValueError): ot_split('MOT20-05',1)
+
+@pytest.mark.skipif(not os.environ.get('V34_TRACKEVAL'),reason='requires external pinned TrackEval checkout')
+def test_bytetrack_mot_writer_and_official_metrics_agree(tmp_path):
+    from tests.test_v32_tracking import fixture_sequence
+    from adaptive_vcm.v32.tracking import plan_sequences,stage_ground_truth,write_mot,load_trackeval,evaluate_mot
+    fixture_sequence(tmp_path/'data')
+    plan=plan_sequences(tmp_path/'data',['MOT20-01'],3)
+    out=tmp_path/'metric'; out.mkdir()
+    tracker=ByteTracker()
+    frames=[tracker.step(dict(boxes=np.array([[10+i,5,30+i,25]],float),scores=np.array([.9]),labels=np.array([1]))) for i in range(3)]
+    write_mot(out/'trackers'/'test'/'data'/'MOT20-01.txt',frames,(1,1,0,0),80,40)
+    stage_ground_truth(plan,out/'ground_truth')
+    values=evaluate_mot(load_trackeval(Path(os.environ['V34_TRACKEVAL'])),plan,out,['test'])
+    assert values['test']['combined']['HOTA']==100
+    assert values['test']['combined']['IDF1']==100

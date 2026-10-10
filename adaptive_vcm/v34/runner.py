@@ -58,6 +58,11 @@ def infer(model,pair,c):
 
 def train_models(cache,inputs,cfg,out,device,task_models):
     validate_cache(cache); fit=[r for r in cache['rows'] if r['split']=='train']; cal=[r for r in cache['rows'] if r['split']=='cal']; models=[]
+    from .learning import targets
+    choices=[targets(r['rate'],np.array(r['damage'],float),r['mask'],cfg['damage_tolerance'],cfg['budget_ratio']) for r in fit]
+    write_json(out/'train_oracle.json',dict(scope='TRAIN constrained measured oracle; never deployed TEST GT selection',
+        count=len(choices),action_counts={str(a):choices.count(a) for a in range(len(ACTIONS))},
+        records=[dict(id=r['id'],codec=r.get('codec'),qp=r.get('qp'),action=a) for r,a in zip(fit,choices)]))
     for seed in cfg['seeds']:
         torch.manual_seed(seed); np.random.seed(seed)
         model=Controller(len(ACTIONS)); history=train_controller(model,fit,inputs,cfg,device)

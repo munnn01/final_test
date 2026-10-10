@@ -1,5 +1,6 @@
 """Frozen task measurements with separate GT and source-consistency provenance."""
 import numpy as np
+import time
 import torch
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
@@ -43,7 +44,10 @@ class Heads(TaskHeads):
 
     @torch.no_grad()
     def source(self,r):
+        start=time.perf_counter()
         r.source_predictions={'od':self.detections(r.rgb)}; r.source_features={}
+        r.source_detector_seconds=time.perf_counter()-start
+        teacher_start=time.perf_counter()
         if len(r.rgb)>1:
             logits,f=ar_forward(self.action,tensor(r.rgb,self.device))
             r.source_predictions['ar']=logits.softmax(-1)[0].cpu().numpy(); r.source_features['ar']=f.cpu()
@@ -57,6 +61,7 @@ class Heads(TaskHeads):
         if r.mask[2]:
             from .tracking import track_frames
             r.source_predictions['ot']=track_frames(r.source_predictions['od'])
+        r.diagnostic_teacher_seconds=time.perf_counter()-teacher_start
 
     @torch.no_grad()
     def costs(self,rgb,r):
@@ -71,7 +76,12 @@ class Heads(TaskHeads):
             indices=frame_indices(len(rgb))
             if r.task=='od':
                 targets=[{k:v.to(self.device) for k,v in r.targets.items()}]
-                loss,f=od_forward(self.detector,x,indices,targets)
+                # Faster R-CNN's GT loss samples proposals even with frozen
+                # weights. Use common random numbers across all candidates.
+                devices=[torch.device(self.device).index or 0] if str(self.device).startswith('cuda') else []
+                with torch.random.fork_rng(devices=devices):
+                    torch.manual_seed(303401)
+                    loss,f=od_forward(self.detector,x,indices,targets)
                 value=float(sum(loss.values()))
             else:
                 preds,f=od_forward(self.detector,x,indices)
