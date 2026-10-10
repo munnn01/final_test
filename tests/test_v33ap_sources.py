@@ -32,3 +32,23 @@ def test_duplicate_pixels_across_namespaces():
     from v33_fixtures import record
     a,b=record(),record('od'); b.rgb=a.rgb.copy()
     with pytest.raises(ValueError,match='duplicate'): pixel_audit([a,b])
+
+
+def test_cohort_rejects_cross_invocation_duplicate_and_allows_transfer(tmp_path):
+    from adaptive_vcm.v33ap.sources import held_out_manifest,assert_held_out
+    from adaptive_vcm.v33ap.protocol import source_id
+    from adaptive_vcm.data import partition
+    cfg=dict(od_size=16); items={}
+    for split in ('dev','test'):
+        n=next(i for i in range(1000) if partition('coco2017/'+str(i))==split)
+        p=tmp_path/(split+'.png'); Image.new('RGB',(16,16),(40,70,90)).save(p)
+        items[split]=[dict(id=str(n),path=str(p),width=16,height=16)]
+    with pytest.raises(ValueError,match='duplicate'): held_out_manifest({'od':items},cfg,{})
+    Image.new('RGB',(16,16),(20,30,50)).save(tmp_path/'test.png')
+    cohort=held_out_manifest({'od':items},cfg,{})
+    pixels=np.asarray(Image.open(tmp_path/'test.png'))[None].copy()
+    identifier=source_id('od',items['test'][0]['id'])
+    assert_held_out(cohort,identifier,pixels,'od','test')
+    assert_held_out(cohort,identifier,pixels,'od','test') # same-ID TEST8 transfer reuses the frozen cohort
+    with pytest.raises(ValueError): assert_held_out(cohort,identifier,pixels,'od','dev')
+    with pytest.raises(ValueError): assert_held_out(cohort,identifier,pixels+1,'od','test')

@@ -22,13 +22,31 @@ OPTIONAL=set()
 
 def pack(members):
     if set(members)!=REQUIRED: raise ValueError('only source/origin/job allowed')
-    return old_pack(members)
+    stream=io.BytesIO()
+    with zipfile.ZipFile(stream,'w',compression=zipfile.ZIP_STORED) as archive:
+        for name,raw in sorted(members.items()): archive.writestr(zipfile.ZipInfo(name,(1980,1,1,0,0,0)),raw)
+    if len(stream.getvalue())>4_000_000: raise ValueError('packed source too large')
+    return base64.b64encode(lzma.compress(stream.getvalue(),preset=6)).decode()
 
 
 def unpack(payload):
     members=old_unpack(payload)
     if set(members)!=REQUIRED: raise ValueError('only source/origin/job allowed')
     return members
+
+
+def stored_source(bundle,origin):
+    if hashlib.sha256(bundle).hexdigest()!=origin['bundle_sha256']: raise ValueError('original source bundle mismatch')
+    stream=io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(bundle)) as source,zipfile.ZipFile(stream,'w',compression=zipfile.ZIP_STORED) as target:
+        if sum(m.file_size for m in source.infolist())>3_900_000: raise ValueError('source exceeds transport budget')
+        for m in source.infolist():
+            member=zipfile.ZipInfo(m.filename,m.date_time); member.external_attr=m.external_attr
+            member.create_system=m.create_system; member.compress_type=zipfile.ZIP_STORED
+            target.writestr(member,source.read(m))
+    raw=stream.getvalue()
+    return raw,{**origin,'bundle_sha256':hashlib.sha256(raw).hexdigest(),'bundle_bytes':len(raw),
+                'transport_repack':'ZIP_STORED committed member bytes; outer deterministic LZMA; no source filtering'}
 
 
 def job_spec(arm,account,origin):
@@ -103,7 +121,7 @@ finally:
 def build_notebook(members,job):
     if set(members)!=REQUIRED or json.loads(members['job.json'])!=job: raise ValueError('payload membership/job mismatch')
     constants='import base64,hashlib,io,json,lzma,stat,subprocess,zipfile\nfrom pathlib import Path\n'
-    constants+=f'REQUIRED={REQUIRED!r}\nOPTIONAL=set()\n'+inspect.getsource(old_unpack)
+    constants+=f'REQUIRED=set({tuple(sorted(REQUIRED))!r})\nOPTIONAL=set()\n'+inspect.getsource(old_unpack)
     constants+=f'PACKED={pack(members)!r}\nMEMBERS=unpack(PACKED)\nORIGIN=json.loads(MEMBERS["origin.json"])\nJOB=json.loads(MEMBERS["job.json"])\n'
     sources=[constants,inspect.getsource(safe_extract)+'\n'+inspect.getsource(mount_data)+'\n'+RUNTIME]
     for s in sources: compile(s,'<notebook>','exec')
@@ -118,7 +136,7 @@ def build_notebook(members,job):
 def prepare(arm,account,out):
     out=Path(out)
     if out.exists() and any(out.iterdir()): raise FileExistsError('payload must be empty')
-    bundle,origin,_=source_snapshot(); job=job_spec(arm,account,origin)
+    bundle,origin,_=source_snapshot(); bundle,origin=stored_source(bundle,origin); job=job_spec(arm,account,origin)
     members={'source.zip':bundle,'origin.json':json.dumps(origin).encode(),'job.json':json.dumps(job).encode()}
     notebook,metadata=build_notebook(members,job); out.mkdir(parents=True,exist_ok=True)
     for name,value in [('notebook.ipynb',notebook),('kernel-metadata.json',metadata),('job.json',job),('origin-manifest.json',origin)]:

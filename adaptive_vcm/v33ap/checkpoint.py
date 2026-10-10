@@ -8,6 +8,7 @@ from ..v32.protocol import canonical_hash,provenance
 from ..v32vc.checkpoint import state_hash,LearnedPreprocessor
 from .model import JointPreprocessor
 from .protocol import settings,split_train,arm_weights
+from .sources import validate_held_out
 
 
 def make_checkpoint(model,metadata):
@@ -40,6 +41,7 @@ def load_checkpoint(path,device='cpu'):
         ids+=domain
     hashes=m.get('source_pixel_sha256',{})
     if set(hashes)!=set(ids) or len(set(hashes.values()))!=128 or not all(is_hash(h) for h in hashes.values()): raise ValueError('invalid source hashes')
+    validate_held_out(m.get('held_out',{}),hashes)
     if not all(is_hash(m.get(k)) for k in ('annotations_sha256','supervision_sha256')): raise ValueError('missing target provenance')
     models=m.get('task_models',{})
     if set(models)!={'ar','od'} or any(not is_hash(h.get('state_sha256')) or not h.get('name') for h in models.values()): raise ValueError('missing task model provenance')

@@ -2,10 +2,11 @@
 from dataclasses import dataclass,field
 import hashlib
 from pathlib import Path
+import re
 import cv2
 import numpy as np
 import torch
-from ..data import ar_plan,od_plan,read_image
+from ..data import ar_plan,od_plan,read_image,partition
 from ..motion_support import build_motion_support
 from ..preprocessing import normalize_map,boxes_to_mask
 from ..rateaware import semantic_protection
@@ -66,6 +67,40 @@ def pixel_audit(records):
     return hashes
 
 
+def held_out_manifest(plans,cfg,training_hashes):
+    """Audit both domains and held-out splits once; do not use any held-out labels."""
+    hashes={}; splits={}; recipes={}; seen=set(training_hashes.values())
+    for task,domains in plans.items():
+        splits[task]={}
+        for split,items in domains.items():
+            if split not in ('dev','test'): raise ValueError('held-out split required')
+            splits[task][split]=[]
+            for item in items:
+                identifier=source_id(task,item['id'])
+                if partition(identifier[3:])!=split: raise ValueError('held-out partition mismatch')
+                rgb,_,recipe=read_source(task,item,cfg); digest=hashlib.sha256(rgb.tobytes()).hexdigest()
+                if identifier in hashes or identifier in training_hashes or digest in seen: raise ValueError('duplicate pixels/ID across TRAIN/DEV/TEST cohort')
+                hashes[identifier]=digest; seen.add(digest); recipes[identifier]=recipe; splits[task][split].append(identifier)
+    return dict(splits=splits,source_pixel_sha256=hashes,frame_recipes=recipes)
+
+
+def validate_held_out(cohort,training_hashes):
+    splits=cohort.get('splits',{}); hashes=cohort.get('source_pixel_sha256',{}); ids=[]
+    if set(splits)!={'ar','od'}: raise ValueError('both held-out domains required')
+    for task,groups in splits.items():
+        if set(groups)!={'dev','test'}: raise ValueError('DEV/TEST cohort required')
+        for split,group in groups.items():
+            prefix='ar/' if task=='ar' else 'od/coco2017/'
+            if len(group)!=(16 if split=='dev' else 32) or any(not isinstance(i,str) or not i.startswith(prefix) or partition(i[3:])!=split for i in group): raise ValueError('invalid held-out cohort scope')
+            ids+=group
+    if len(ids)!=len(set(ids)) or set(hashes)!=set(ids) or set(ids)&set(training_hashes) or len(set(hashes.values()))!=len(ids) or set(hashes.values())&set(training_hashes.values()) or any(re.fullmatch('[0-9a-f]{64}',str(h)) is None for h in hashes.values()): raise ValueError('duplicate/invalid held-out cohort pixels/IDs')
+    return cohort
+
+
+def assert_held_out(cohort,identifier,rgb,task,split):
+    if identifier not in cohort['splits'][task][split] or cohort['source_pixel_sha256'].get(identifier)!=hashlib.sha256(rgb.tobytes()).hexdigest(): raise ValueError('held-out source differs from frozen cohort')
+
+
 def label_free_support(record,heads,cfg):
     rgb=record.rgb; h,w=rgb.shape[1:3]
     semantic=semantic_protection(normalize_map(heads.action.saliency(rgb))) if record.task=='ar' else np.zeros((h,w),np.float32)
@@ -103,7 +138,16 @@ def prepare_sources(ar_root,od_root,annotations,heads,cfg):
                 source_predictions=serial(record.source_predictions),feature_sha256={k:hashlib.sha256(v.numpy().tobytes()).hexdigest() for k,v in record.source_features.items()})
             print('PREPARE '+identifier,flush=True)
     hashes=pixel_audit(records.values())
+    held_plans={}
+    for task,root in (('ar',ar_root),('od',od_root)):
+        held_plans[task]={}
+        for split,count in (('dev',16),('test',32)):
+            plan,meta=ar_plan(Path(root),split,count) if task=='ar' else od_plan(Path(root),Path(annotations),split,count)
+            if task=='ar' and meta['unmapped_folders']: raise ValueError('unknown held-out K400 folders')
+            held_plans[task][split]=plan
+    held_out=validate_held_out(held_out_manifest(held_plans,cfg,hashes),hashes)
     return dict(records=records,splits=splits,source_pixel_sha256=hashes,availability=availability,
+        held_out=held_out,
         annotations_sha256=hashlib.sha256(Path(annotations).read_bytes()).hexdigest(),
         supervision_sha256=canonical_hash(supervised),supervision=supervised,
         frame_recipes={i:r.frame_recipe for i,r in records.items()})

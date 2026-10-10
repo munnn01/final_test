@@ -67,3 +67,27 @@ def write_payload(tmp_path):
         (tmp_path/name).write_text(json.dumps(value))
     hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in tmp_path.iterdir()}
     (tmp_path/'local_validation.json').write_text(json.dumps(dict(payload_sha256=hashes)))
+
+
+def test_time_and_process_independent_validation(tmp_path,monkeypatch):
+    import os,subprocess,sys
+    from scripts.v33ap_kaggle import validate_payload
+    monkeypatch.setattr(zipfile.time,'localtime',lambda *args:(2000,1,1,0,0,0,0,1,-1))
+    write_payload(tmp_path)
+    monkeypatch.setattr(zipfile.time,'localtime',lambda *args:(2001,1,1,0,0,0,0,1,-1))
+    validate_payload(tmp_path)
+    command=[sys.executable,'-B','-c','from pathlib import Path; import sys; from scripts.v33ap_kaggle import validate_payload; validate_payload(Path(sys.argv[1]))',str(tmp_path)]
+    for seed in ('1','123'):
+        result=subprocess.run(command,env={**os.environ,'PYTHONHASHSEED':seed},capture_output=True,text=True)
+        assert result.returncode==0,result.stderr
+
+
+def test_stored_source_preserves_exact_members():
+    import hashlib
+    from scripts.v33ap_kaggle import stored_source
+    origin,raw=origin_bundle(); packed,new=stored_source(raw,origin)
+    with zipfile.ZipFile(io.BytesIO(packed)) as a,zipfile.ZipFile(io.BytesIO(raw)) as b:
+        assert a.namelist()==b.namelist() and all(a.read(n)==b.read(n) for n in a.namelist())
+        assert all(m.compress_type==zipfile.ZIP_STORED for m in a.infolist())
+    assert new['origin_commit']==origin['origin_commit'] and new['source_files_sha256']==origin['source_files_sha256']
+    assert new['bundle_sha256']==hashlib.sha256(packed).hexdigest()

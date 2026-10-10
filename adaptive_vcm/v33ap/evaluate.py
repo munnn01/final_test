@@ -14,7 +14,7 @@ from ..metrics import curve_summary
 from ..v32.evaluate import empty_output
 from ..v32vc.checkpoint import state_hash
 from .protocol import settings,source_id,codec_factory
-from .sources import SourceRecord,read_source,label_free_support,pixel_audit,serial
+from .sources import SourceRecord,read_source,label_free_support,pixel_audit,serial,assert_held_out
 from .tasks import TaskHeads
 from .checkpoint import load_checkpoint
 from .receiver import SharedReceiver,timed
@@ -76,6 +76,9 @@ def run(args,*,heads=None,receiver=None,model=None,plan_override=None,cfg=None):
         receiver=SharedReceiver(actions,DetectionAnalyzer('resnet50',device))
     plan,meta=plan_override if plan_override else ar_plan(args.root,args.split,args.count) if args.task=='ar' else od_plan(args.root,args.annotations,args.split,args.count)
     if args.task=='ar' and meta.get('unmapped_folders'): raise ValueError('unknown K400 labels')
+    if plan_override is None:
+        expected=model.metadata['held_out']['splits'][args.task][args.split][:args.count]
+        if [source_id(args.task,item['id']) for item in plan]!=expected: raise ValueError('evaluation differs from frozen held-out plan')
     manifest=dict(task=args.task,split=args.split,count=len(plan),preset='fast' if args.transfer else cfg['preset'],settings=cfg,
         checkpoint_sha256=model.manifest['checkpoint_sha256'],arm=model.metadata['arm'],source_pixel_sha256={},frame_recipes={},status='running',
         device=device,gpu=torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,python=platform.python_version(),torch=str(torch.__version__),
@@ -87,6 +90,7 @@ def run(args,*,heads=None,receiver=None,model=None,plan_override=None,cfg=None):
         identifier=source_id(args.task,item['id'])
         if partition(identifier[3:])!=args.split: raise ValueError('source partition mismatch')
         rgb,g,recipe=read_source(args.task,item,cfg); model.assert_source(identifier,rgb)
+        if 'held_out' in model.metadata: assert_held_out(model.metadata['held_out'],identifier,rgb,args.task,args.split)
         r=SourceRecord(identifier,args.task,{k:v for k,v in item.items() if k!='label'},rgb,g,recipe)
         def prepare(): heads.source_targets(r); r.support=label_free_support(r,heads,cfg)
         _,preparation=timed(prepare); audit_records.append(r); hashes=pixel_audit(audit_records)
