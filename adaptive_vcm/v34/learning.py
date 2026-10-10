@@ -59,7 +59,7 @@ def train_controller(model,rows,inputs,cfg,device):
     rate=torch.tensor([r['rate'] for r in rows],device=device,dtype=torch.float32)
     damage=torch.tensor([[[float('nan') if v is None else v for v in a] for a in r['damage']] for r in rows],device=device,dtype=torch.float32)
     mask=torch.tensor([r['mask'] for r in rows],device=device,dtype=torch.bool)
-    labels=torch.tensor([targets(r['rate'],np.where(np.array(r['damage'],object)==None,np.nan,r['damage']).astype(float),r['mask'],cfg['damage_tolerance'],cfg['budget_ratio']) for r in rows],device=device)
+    labels=torch.tensor([targets(r['rate'],np.array(r['damage'],float),r['mask'],cfg['damage_tolerance'],cfg['budget_ratio']) for r in rows],device=device)
     for epoch in range(cfg['epochs']):
         order=torch.randperm(len(rows),device=device); values=[]
         for batch in order.split(16):
