@@ -27,3 +27,11 @@ Review fixes: deterministic sorted outer ZIP members with fixed timestamps and s
 Review RED:3 failed/6 passed (timestamp rebuild and missing cohort helpers). Targeted GREEN:14 passed,13.94s,exit0. Final regression:115 passed,84.08s,exit0; outputs/v33ap_review_whole_tests.log. Same whole-suite command above, with --basetemp outputs/temp/v33ap-review-whole. Deferred Minor findings: none. Rulings remain the one approved native-checkout ruling above. Preserve branch v32-real-forward and the existing checkout; no integration or cleanup requested.
 
 Additional user request completed: old V32AT OT+AR receipts and archives collected to D:/STUDY/LAB/bao_1/output/v32at_collected_20261010. Report RESULTS_OT_AR.md records OT identity80/80 and BD-rate0%, plus AR Swin TEST32 BD-rate+1.30% H.264/-0.51% H.265. These are previous campaign results, not V33-AP results.
+
+Task5 final submission: all three public notebooks accepted as version1 on2026-10-10. Same clean source commit40b79132064eaf594ec524384c8c79c26535b320 and ZIP bundle SHA2561285afd135cdd6fa53ab047a685be095eb7f9474046d688167eb28b07860ec90. Exact committed members/source hashes, bounded extraction, cross-process validation with PYTHONHASHSEED1/123, cell compilation and absence of pool credential bytes verified. Serialized source bytes: joint582365; ar_only582369; od_only582241. External local validation and per-arm submission receipts are under D:/STUDY/LAB/bao_1/output/v33ap_submission; this ledger update is documentation only after dispatch.
+
+- joint: https://www.kaggle.com/code/hieusunday0412/v33ap-joint-s303251 —version1 accepted; one inventory check confirmed ref.
+- ar_only: https://www.kaggle.com/code/ngynanhthuw/v33ap-ar-only-s303251 —version1 accepted; one inventory check confirmed ref.
+- od_only: https://www.kaggle.com/code/wagur124705/v33ap-od-only-s303251 —version1 accepted; one inventory check confirmed ref.
+
+Selected accounts each reported30h GPU quota immediately before submission. No prior job cancelled, no status/log/completion monitoring, no automation. Accepted dispatch does not establish successful GPU completion or task/BD-rate improvement. All planned implementation/submission work complete; Kaggle outcomes await the user's next requested check.
