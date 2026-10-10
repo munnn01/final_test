@@ -58,6 +58,18 @@ stall. No full-repository pass is claimed. Evidence is preserved in
 `../output/v34_validation/full_suite_limitation.json` and fresh repair test/smoke
 logs in `../output/v34_r1_validation/` (paths relative to repository root).
 
-Pending: immutable public payload scan, fresh account preflight, submission
-receipt. A three-seed notebook will run the same exploratory historical cohorts;
-results must not be described as independent confirmation.
+Public source-only payload passed immutable validation and credential-byte scan
+(341 source members; 621,719 serialized notebook source bytes). Source commit
+`df1fa0dd712e5d6c7046a24b18cdd1a306a2de59` is pinned in the payload.
+Fresh account preflight found 27.14 GPU hours and terminal previous notebooks.
+
+Kaggle accepted version 1:
+https://www.kaggle.com/code/htran123456/v34-ar-ot-r1-df1fa0dd
+
+Submission evidence is saved in `../output/v34_r1_kaggle/ar_ot/submission.json`.
+No completion monitoring was started. The three seeds run the same exploratory
+historical cohorts; results must not be described as independent confirmation.
+Task improvement remains unverified until the new outputs are available.
+
+Ruling: preserve the existing native branch and checkout for continuing this
+research; no Git remote push, merge or cleanup is needed for Kaggle execution.
