@@ -13,15 +13,14 @@ import zipfile
 from scripts.v32_mot20_kaggle import source_snapshot,safe_extract
 from scripts.v32vc_kaggle import mount_data
 from scripts.v32rf_kaggle import serialized_source_bytes
-from scripts.v32at_kaggle import pack as old_pack,unpack as old_unpack
 from adaptive_vcm.v33ap.protocol import settings,arm_weights
 
 REQUIRED={'source.zip','origin.json','job.json'}
-OPTIONAL=set()
+OPTIONAL={'shared_last.pth','checkpoint-recovery.json'}
 
 
 def pack(members):
-    if set(members)!=REQUIRED: raise ValueError('only source/origin/job allowed')
+    if not REQUIRED<=set(members) or set(members)-REQUIRED-OPTIONAL or bool(set(members)&OPTIONAL) and not OPTIONAL<=set(members): raise ValueError('unplanned payload members')
     stream=io.BytesIO()
     with zipfile.ZipFile(stream,'w',compression=zipfile.ZIP_STORED) as archive:
         for name,raw in sorted(members.items()): archive.writestr(zipfile.ZipInfo(name,(1980,1,1,0,0,0)),raw)
@@ -30,9 +29,33 @@ def pack(members):
 
 
 def unpack(payload):
-    members=old_unpack(payload)
-    if set(members)!=REQUIRED: raise ValueError('only source/origin/job allowed')
-    return members
+    try:
+        if len(payload)>2_000_000: raise ValueError('payload too large')
+        decoder=lzma.LZMADecompressor(memlimit=64*1024*1024)
+        raw=decoder.decompress(base64.b64decode(payload,validate=True),max_length=4_000_001)
+        if len(raw)>4_000_000 or not decoder.eof or decoder.unused_data: raise ValueError('packed source exceeds bounds')
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            names=archive.namelist(); keys=set(names)
+            if len(names)!=len(keys) or not REQUIRED<=keys or keys-REQUIRED-OPTIONAL or bool(keys&OPTIONAL) and not OPTIONAL<=keys: raise ValueError('unplanned payload members')
+            if sum(m.file_size for m in archive.infolist())>4_000_000: raise ValueError('expanded source too large')
+            return {name:archive.read(name) for name in names}
+    except (lzma.LZMAError,zipfile.BadZipFile,TypeError,ValueError) as error:
+        raise ValueError('invalid packed payload') from error
+
+
+def checkpoint_info(raw,origin,arm):
+    import torch
+    from adaptive_vcm.v32.protocol import canonical_hash
+    from adaptive_vcm.v32vc.checkpoint import state_hash
+    value=torch.load(io.BytesIO(raw),map_location='cpu',weights_only=True)
+    m=value['metadata']; recovery=m.get('checkpoint_recovery',{})
+    expected={k:h for k,h in origin['source_files_sha256'].items() if k.startswith('adaptive_vcm/') and k.endswith('.py')}
+    if (m.get('arm')!=arm or m.get('settings')!=settings() or m.get('checkpoint_role')!='LAST'
+        or canonical_hash(m)!=value['metadata_sha256'] or state_hash(value['model'])!=m.get('state_sha256')
+        or m['code']['code_files_sha256']!=expected or recovery.get('parameter_updates') is not False
+        or recovery.get('state_sha256')!=m['state_sha256']): raise ValueError('recovery checkpoint state/recipe/provenance mismatch')
+    return dict(checkpoint_sha256=hashlib.sha256(raw).hexdigest(),state_sha256=m['state_sha256'],metadata_sha256=value['metadata_sha256'],
+        original_checkpoint_sha256=recovery['original_checkpoint_sha256'],original_source_commit=recovery['original_source_commit'],parameter_updates=False)
 
 
 def stored_source(bundle,origin):
@@ -49,15 +72,17 @@ def stored_source(bundle,origin):
                 'transport_repack':'ZIP_STORED committed member bytes; outer deterministic LZMA; no source filtering'}
 
 
-def job_spec(arm,account,origin):
+def job_spec(arm,account,origin,*,recovery=None):
     arm_weights(arm)
     if not re.fullmatch('[a-zA-Z0-9_-]+',account) or not re.fullmatch('[0-9a-f]{40}',origin['origin_commit']): raise ValueError('invalid account/origin')
     slug='v33ap-'+arm.replace('_','-')+'-s303251'
-    return dict(schema='v33ap-kaggle-1',arm=arm,slug=slug,handle=account+'/'+slug,private=False,
+    job=dict(schema='v33ap-kaggle-1',arm=arm,slug=slug,handle=account+'/'+slug,private=False,
         seed=303251,origin_commit=origin['origin_commit'],protocol=settings(),active_tasks=['ar','od'],
         datasets=['qktttttttttt/kineticscleaned','awsaf49/coco-2017-dataset'],
         counts=dict(train=64,fit=48,cal=12,proxyval=4,dev=16,test=32,transfer=8),
         scope='shared adaptive preprocessing; standard actual codec forward/fixed proxy backward; exploratory historical partitions; LAST; no confirmed gain')
+    if recovery is not None: job['recovery']=recovery
+    return job
 
 
 RUNTIME=r'''
@@ -95,9 +120,21 @@ try:
     if settings()!=JOB['protocol']: raise ValueError('runtime recipe mismatch')
     ar_root,_=mount_data(Path('/kaggle/input'),'ar'); od_root,annotations=mount_data(Path('/kaggle/input'),'od')
     save('data-mount.json',dict(ar=str(ar_root),od=str(od_root),annotations=str(annotations)))
-    status['stage']='training'; save('status.json',status)
-    run([sys.executable,'-u','-m','adaptive_vcm.v33ap.train','--arm',JOB['arm'],'--ar-root',str(ar_root),'--od-root',str(od_root),'--annotations',str(annotations),'--device','cuda','--out',str(OUT/'training')],cwd=str(REPO))
     checkpoint=OUT/'training/shared_last.pth'
+    if JOB.get('recovery'):
+        info=json.loads(MEMBERS['checkpoint-recovery.json'])
+        if info!=JOB['recovery'] or hashlib.sha256(MEMBERS['shared_last.pth']).hexdigest()!=info['checkpoint_sha256']: raise ValueError('recovery checkpoint payload mismatch')
+        checkpoint.parent.mkdir(parents=True,exist_ok=True); checkpoint.write_bytes(MEMBERS['shared_last.pth'])
+        save('checkpoint-recovery.json',info); status['stage']='reused_trained_checkpoint'; save('status.json',status)
+    else:
+        status['stage']='training'; save('status.json',status)
+        run([sys.executable,'-u','-m','adaptive_vcm.v33ap.train','--arm',JOB['arm'],'--ar-root',str(ar_root),'--od-root',str(od_root),'--annotations',str(annotations),'--device','cuda','--out',str(OUT/'training')],cwd=str(REPO))
+    from adaptive_vcm.v33ap.checkpoint import load_checkpoint
+    checked=load_checkpoint(checkpoint,'cpu')
+    if checked.metadata['arm']!=JOB['arm']: raise ValueError('checkpoint arm mismatch')
+    if JOB.get('recovery') and checked.metadata['state_sha256']!=JOB['recovery']['state_sha256']: raise ValueError('recovery state mismatch')
+    save('checkpoint-sanity.json',dict(checkpoint_sanity='passed',arm=checked.metadata['arm'],state_sha256=checked.metadata['state_sha256']))
+    del checked
     save('checkpoint-sha256.json',{'shared_last.pth':hashlib.sha256(checkpoint.read_bytes()).hexdigest()})
     for task,root in [('ar',ar_root),('od',od_root)]:
         extra=['--annotations',str(annotations)] if task=='od' else []
@@ -119,9 +156,10 @@ finally:
 
 
 def build_notebook(members,job):
-    if set(members)!=REQUIRED or json.loads(members['job.json'])!=job: raise ValueError('payload membership/job mismatch')
+    if set(members)!=(REQUIRED|OPTIONAL if job.get('recovery') else REQUIRED) or json.loads(members['job.json'])!=job: raise ValueError('payload membership/job mismatch')
+    if job.get('recovery') and (json.loads(members['checkpoint-recovery.json'])!=job['recovery'] or checkpoint_info(members['shared_last.pth'],json.loads(members['origin.json']),job['arm'])!=job['recovery']): raise ValueError('recovery checkpoint mismatch')
     constants='import base64,hashlib,io,json,lzma,stat,subprocess,zipfile\nfrom pathlib import Path\n'
-    constants+=f'REQUIRED=set({tuple(sorted(REQUIRED))!r})\nOPTIONAL=set()\n'+inspect.getsource(old_unpack)
+    constants+=f'REQUIRED=set({tuple(sorted(REQUIRED))!r})\nOPTIONAL=set({tuple(sorted(OPTIONAL))!r})\n'+inspect.getsource(unpack)
     constants+=f'PACKED={pack(members)!r}\nMEMBERS=unpack(PACKED)\nORIGIN=json.loads(MEMBERS["origin.json"])\nJOB=json.loads(MEMBERS["job.json"])\n'
     sources=[constants,inspect.getsource(safe_extract)+'\n'+inspect.getsource(mount_data)+'\n'+RUNTIME]
     for s in sources: compile(s,'<notebook>','exec')
@@ -133,11 +171,15 @@ def build_notebook(members,job):
     return notebook,meta
 
 
-def prepare(arm,account,out):
+def prepare(arm,account,out,*,checkpoint=None):
     out=Path(out)
     if out.exists() and any(out.iterdir()): raise FileExistsError('payload must be empty')
-    bundle,origin,_=source_snapshot(); bundle,origin=stored_source(bundle,origin); job=job_spec(arm,account,origin)
+    bundle,origin,_=source_snapshot(); bundle,origin=stored_source(bundle,origin)
+    raw=Path(checkpoint).read_bytes() if checkpoint is not None else None
+    recovery=checkpoint_info(raw,origin,arm) if raw is not None else None
+    job=job_spec(arm,account,origin,recovery=recovery)
     members={'source.zip':bundle,'origin.json':json.dumps(origin).encode(),'job.json':json.dumps(job).encode()}
+    if raw is not None: members.update({'shared_last.pth':raw,'checkpoint-recovery.json':json.dumps(recovery).encode()})
     notebook,metadata=build_notebook(members,job); out.mkdir(parents=True,exist_ok=True)
     for name,value in [('notebook.ipynb',notebook),('kernel-metadata.json',metadata),('job.json',job),('origin-manifest.json',origin)]:
         (out/name).write_text(json.dumps(value,indent=2,sort_keys=True)+'\n',encoding='utf-8')
@@ -158,7 +200,8 @@ def validate_payload(directory):
     if len(values)!=1: raise ValueError('invalid payload constants')
     members=unpack(values[0])
     if hashlib.sha256(members['source.zip']).hexdigest()!=origin['bundle_sha256'] or json.loads(members['origin.json'])!=origin: raise ValueError('payload source mismatch')
-    expected=job_spec(job['arm'],job['handle'].split('/')[0],origin)
+    recovery=checkpoint_info(members['shared_last.pth'],origin,job['arm']) if job.get('recovery') else None
+    expected=job_spec(job['arm'],job['handle'].split('/')[0],origin,recovery=recovery)
     if job!=expected: raise ValueError('payload recipe drift')
     rebuilt,meta=build_notebook(members,job)
     if nb!=rebuilt or json.loads((directory/'kernel-metadata.json').read_text())!=meta: raise ValueError('payload notebook/metadata mismatch')
@@ -190,7 +233,8 @@ def submit(client,account,directory):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__); p.add_argument('--arm',choices=['joint','ar_only','od_only'],required=True); p.add_argument('--account',required=True); p.add_argument('--out',type=Path,required=True)
-    a=p.parse_args(); print(json.dumps(prepare(a.arm,a.account,a.out)))
+    p.add_argument('--checkpoint',type=Path,help='verified recovered LAST; evaluation only')
+    a=p.parse_args(); print(json.dumps(prepare(a.arm,a.account,a.out,checkpoint=a.checkpoint)))
 
 
 if __name__=='__main__': main()

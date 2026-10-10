@@ -91,3 +91,29 @@ def test_stored_source_preserves_exact_members():
         assert all(m.compress_type==zipfile.ZIP_STORED for m in a.infolist())
     assert new['origin_commit']==origin['origin_commit'] and new['source_files_sha256']==origin['source_files_sha256']
     assert new['bundle_sha256']==hashlib.sha256(packed).hexdigest()
+
+
+def test_recovery_payload_skips_training_and_checks_checkpoint(tmp_path):
+    import hashlib,torch
+    from scripts.v33ap_kaggle import job_spec,build_notebook,pack,unpack,checkpoint_info
+    from adaptive_vcm.v33ap.model import JointPreprocessor
+    from adaptive_vcm.v33ap.checkpoint import make_checkpoint
+    from adaptive_vcm.v32.protocol import canonical_hash
+    from test_v33ap_checkpoint import metadata
+    origin,bundle=origin_bundle(); value=make_checkpoint(JointPreprocessor(),metadata())
+    value['metadata']['code']['code_files_sha256']={}
+    value['metadata']['checkpoint_recovery']=dict(original_checkpoint_sha256='b'*64,original_source_commit='c'*40,state_sha256=value['metadata']['state_sha256'],parameter_updates=False)
+    value['metadata_sha256']=canonical_hash(value['metadata']); stream=io.BytesIO(); torch.save(value,stream); raw=stream.getvalue()
+    info=checkpoint_info(raw,origin,'joint')
+    assert info['checkpoint_sha256']==hashlib.sha256(raw).hexdigest() and info['parameter_updates'] is False
+    j=job_spec('joint','owner',origin,recovery=info)
+    members={'source.zip':bundle,'origin.json':json.dumps(origin).encode(),'job.json':json.dumps(j).encode(),'shared_last.pth':raw,'checkpoint-recovery.json':json.dumps(info).encode()}
+    assert unpack(pack(members))==members
+    nb,meta=build_notebook(members,j); source=''.join(''.join(c['source']) for c in nb['cells'])
+    assert "if JOB.get('recovery')" in source and 'checkpoint_sanity' in source
+    assert 'reused_trained_checkpoint' in source
+    with pytest.raises(ValueError): checkpoint_info(raw,origin,'ar_only')
+    members['shared_last.pth']=raw+b'tampered'
+    with pytest.raises(ValueError,match='checkpoint'): build_notebook(members,j)
+    members.pop('checkpoint-recovery.json')
+    with pytest.raises(ValueError): pack(members)

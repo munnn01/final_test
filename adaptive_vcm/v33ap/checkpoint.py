@@ -11,9 +11,20 @@ from .protocol import settings,split_train,arm_weights
 from .sources import validate_held_out
 
 
+def native_metadata(value):
+    """Keep checkpoint metadata independent of NumPy pickle globals."""
+    if isinstance(value,np.generic): return native_metadata(value.item())
+    if isinstance(value,dict):
+        if any(type(k) is not str for k in value): raise TypeError('metadata keys must be strings')
+        return {k:native_metadata(v) for k,v in value.items()}
+    if isinstance(value,(tuple,list)): return [native_metadata(v) for v in value]
+    if value is None or type(value) in (str,bool,int,float): return value
+    raise TypeError('unsupported checkpoint metadata type: '+type(value).__name__)
+
+
 def make_checkpoint(model,metadata):
     state={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
-    m=dict(metadata,schema=settings()['schema'],checkpoint_role='LAST',state_sha256=state_hash(state),code=provenance(settings()))
+    m=native_metadata(dict(metadata,schema=settings()['schema'],checkpoint_role='LAST',state_sha256=state_hash(state),code=provenance(settings())))
     return dict(metadata=m,metadata_sha256=canonical_hash(m),model=state)
 
 
