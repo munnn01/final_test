@@ -32,3 +32,23 @@ def test_checkpoint_is_weights_only_safe_and_detects_metadata_tampering(tmp_path
     value=torch.load(path,weights_only=True)
     value['metadata']['seed']=0; torch.save(value,path)
     with pytest.raises(ValueError,match='metadata'): load_checkpoint(path)
+
+def test_three_seed_training_freezes_cal_and_roundtrips_native_metadata(tmp_path):
+    from adaptive_vcm.v34.runner import train_models
+    from adaptive_vcm.v34.protocol import digest,settings
+    cfg=settings(); cfg['epochs']=1
+    inputs={key:(torch.rand(1,3,12,12),torch.ones(1,3,12,12)/3) for key in ('fit','cal')}
+    sources={k:{'split':s,'pixel_sha256':str(i)*64} for i,(k,s) in enumerate([('fit','train'),('cal','cal')])}
+    rows=[{'id':k,'split':s,'condition':[0.,.7,0.,1.,0.,1.01],
+        'mask':[0,1,0],'rate':[1.,.8,1.001],
+        'damage':[[None,0.,None],[None,.01,None],[None,-.1,None]]} for k,s in [('fit','train'),('cal','cal')]]
+    cache={'schema':'adaptive-vcm-v34-1','experiment':'ar_od','origin':{'origin_commit':'a'*40,'bundle_sha256':'b'*64},'sources':sources,'rows':rows}
+    cache['sha256']=digest(cache)
+    # Keep the same finite bank dimensions as the production model.
+    for r in rows:
+        r['rate'] += [1.]*10; r['damage'] += [[None,0.,None]]*10
+    cache['sha256']=digest({k:v for k,v in cache.items() if k!='sha256'})
+    models=train_models(cache,inputs,cfg,tmp_path,'cpu',{})
+    assert len(models)==3 and len({m.checkpoint_sha256 for m in models})==3
+    assert all(m.metadata['calibration']['count']==1 for m in models)
+    assert all(len(m.metadata['training_history'])==1 for m in models)
