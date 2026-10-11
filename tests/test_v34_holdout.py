@@ -102,6 +102,23 @@ def test_short_frame_folder_is_not_padded_to_satisfy_holdout(tmp_path):
         h.read_frames(tmp_path, frames=16, stride=2, size=128)
 
 
+def test_inventory_excludes_short_provider_sources_before_hash_selection(tmp_path):
+    h = module()
+    annotations = {i: dict(label=0, time_start=0, time_end=10)
+                   for i in ['video000000', 'video000001', 'video000002']}
+    for yt, count in [('video000000', 31), ('video000001', 32), ('video000002', 40), ('unknown0000', 40)]:
+        folder = tmp_path/'validation'/yt; folder.mkdir(parents=True)
+        for j in range(count): (folder/f'img_{j+1:05d}.jpg').write_bytes(b'count-only fixture')
+    records, audit = h.frame_inventory(tmp_path, annotations, minimum_frames=32)
+    selected, plan = h.select_records(records, annotations, {}, count=2, seed=42, shards=1, shard=0)
+    assert {r['youtube_id'] for r in selected} == {'video000001', 'video000002'}
+    assert audit['official_available'] == 3 and audit['eligible_sources'] == 2
+    assert audit['short_sources'] == {'video000000': 31}
+    assert audit['minimum_frames'] == 32 and plan['eligible_count'] == 2
+    with pytest.raises(ValueError, match='insufficient'):
+        h.select_records(records, annotations, {}, count=3, seed=42, shards=1, shard=0)
+
+
 def merge_fixture(tmp_path):
     import json
     h = module()
@@ -229,7 +246,7 @@ def test_frozen_holdout_runner_real_codecs_never_exposes_label_to_guard(tmp_path
             task_models={'external_test_heads': 'fixed'}, calibration=dict(risk=[[0]*3]*len(ACTIONS), rate=[0]*len(ACTIONS))))
         import hashlib
         checks[str(seed)] = dict(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), state_sha256=state_hash(model.state_dict()))
-    protocol = dict(settings=cfg, design=dict(count=1, shards=1, selection_seed=42), checkpoints=checks,
+    protocol = dict(settings=cfg, design=dict(count=1, shards=1, selection_seed=42, minimum_source_frames=32), checkpoints=checks,
                     controller_source_commit='a'*40, categories_sha256=digest(Swin3D_T_Weights.KINETICS400_V1.meta['categories']))
     (tmp_path/'protocol.json').write_text(json.dumps(protocol))
     (tmp_path/'exclusions.json').write_text('{}')

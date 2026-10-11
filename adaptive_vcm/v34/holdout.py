@@ -52,12 +52,39 @@ def select_records(records, annotations, exclusions, *, count, seed, shards, sha
     return [available[yt] for yt in chosen[shard::shards]], audit
 
 
+def frame_inventory(root, annotations, *, minimum_frames):
+    """Data-only eligibility before hash selection; never inspect task accuracy."""
+    if minimum_frames < 1:
+        raise ValueError('positive minimum source frame count required')
+    records, counts = [], {}
+    for directory, dirs, _ in os.walk(root):
+        keep = []
+        for name in dirs:
+            if name in annotations:
+                if name in counts:
+                    raise ValueError('duplicate available YouTube ID')
+                path = Path(directory)/name
+                count = sum(1 for p in path.glob('img_*.jpg') if p.is_file())
+                counts[name] = count
+                if count >= minimum_frames:
+                    records.append(dict(youtube_id=name, path=str(path), source_frame_count=count))
+                if len(counts) % 1000 == 0:
+                    print('V34 source frame inventory', len(counts), 'eligible', len(records), flush=True)
+            elif not re.fullmatch(r'[A-Za-z0-9_-]{11}', name):
+                keep.append(name)
+        dirs[:] = keep
+    return records, dict(minimum_frames=minimum_frames, official_available=len(counts), eligible_sources=len(records),
+        frame_counts=dict(sorted(counts.items())), frame_counts_sha256=digest(counts),
+        short_sources={k:v for k,v in sorted(counts.items()) if v < minimum_frames},
+        eligibility='count provider img_*.jpg files before hash ranking; no task inference, padding or selected-video replacement')
+
+
 def read_frames(directory, *, frames, stride, size):
     import cv2
     from PIL import Image
     files = sorted(Path(directory).glob('img_*.jpg'))
     if len(files) < frames * stride:
-        raise ValueError('short frame source; no padding/replacement allowed')
+        raise ValueError(f'short frame source; no padding/replacement allowed: {directory}; found {len(files)}, required {frames*stride}')
     start = max(0, len(files) - frames * stride) // 2
     indices = [start + i * stride for i in range(frames)]
     picked, hashes = [], []
@@ -125,16 +152,10 @@ def run(args):
                    for r in annotation_rows}
     if len(annotations) != len(annotation_rows):
         raise ValueError('duplicate pinned official-val annotation')
-    # Stop at video folders: do not traverse millions of provider frame files.
-    records = []
-    for directory, dirs, _ in os.walk(args.root):
-        keep = []
-        for name in dirs:
-            if name in annotations:
-                records.append(dict(youtube_id=name, path=str(Path(directory)/name)))
-            elif not re.fullmatch(r'[A-Za-z0-9_-]{11}', name):
-                keep.append(name)
-        dirs[:] = keep
+    minimum_frames = cfg['frames'] * cfg['temporal_stride']
+    if design.get('minimum_source_frames') != minimum_frames:
+        raise ValueError('minimum source frames must be prospectively declared in repaired protocol')
+    records, inventory = frame_inventory(args.root, annotations, minimum_frames=minimum_frames)
     selected, audit = select_records(records, annotations, exclusions, count=design['count'], seed=design['selection_seed'],
                                       shards=design['shards'], shard=args.shard)
     out = Path(args.out)
@@ -143,6 +164,10 @@ def run(args):
     out.mkdir(parents=True)
     write_json(out/'protocol.json', protocol)
     write_json(out/'selection.json', audit)
+    write_json(out/'source_inventory.json', inventory)
+    print('V34 independent eligibility', json.dumps(dict(available=inventory['official_available'],
+        eligible=inventory['eligible_sources'], excluded_short=len(inventory['short_sources']),
+        minimum_frames=minimum_frames, shard=args.shard, selected=len(selected))), flush=True)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     torch.set_num_threads(2)
     models = []
@@ -172,6 +197,7 @@ def run(args):
         groups['test'].append(record)
         cohorts[identifier] = dict(youtube_id=item['youtube_id'], split='independent_test', pixel_sha256=sha, frame_recipe=recipe)
     write_json(out/'cohorts.json', cohorts)
+    print('V34 independent frames validated', len(cohorts), 'frozen evaluation starting', flush=True)
     evaluate(groups, heads, models, cfg, {'ar': {}}, out, None)
     after = [state_hash(m.state_dict()) for m in models]
     if before != after:
