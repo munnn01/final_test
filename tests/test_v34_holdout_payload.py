@@ -43,3 +43,25 @@ def test_tampered_payload_is_rejected_before_any_submit_call(tmp_path):
     (tmp_path/'local_validation.json').write_text(json.dumps(receipt))
     (tmp_path/'notebook.ipynb').write_text('{}')
     with pytest.raises(ValueError): m.validate_payload(tmp_path)
+
+
+def test_runtime_transport_preserves_exact_core_bytes_and_committed_provenance():
+    import hashlib, io, zipfile
+    m = module()
+    files = {'adaptive_vcm/v34/holdout.py': b'evaluator\n', 'adaptive_vcm/v34/evaluation.py': b'original core\n',
+             'configs/v34_arot_r1.json': b'{"fixed":true}', 'pyproject.toml': b'name="test"\n',
+             'docs/old.md': b'non-runtime history', 'tests/test_old.py': b'old test', 'scripts/old.py': b'old script'}
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as z:
+        for name, raw in files.items(): z.writestr(name, raw)
+    raw = stream.getvalue()
+    origin = dict(origin_commit='a'*40, bundle_sha256=hashlib.sha256(raw).hexdigest(), bundle_bytes=len(raw),
+        source_files_sha256={n:hashlib.sha256(v).hexdigest() for n,v in files.items() if not n.endswith('.md')})
+    bundle, manifest = m.runtime_source(raw, origin)
+    with zipfile.ZipFile(io.BytesIO(bundle)) as z:
+        expected = {'adaptive_vcm/v34/holdout.py', 'adaptive_vcm/v34/evaluation.py', 'configs/v34_arot_r1.json', 'pyproject.toml'}
+        assert set(z.namelist()) == expected
+        assert all(z.read(n) == files[n] for n in expected)
+    assert set(manifest['source_files_sha256']) == expected
+    assert manifest['origin_commit'] == 'a'*40 and manifest['original_archive_sha256'] == origin['bundle_sha256']
+    assert manifest['bundle_sha256'] == hashlib.sha256(bundle).hexdigest()

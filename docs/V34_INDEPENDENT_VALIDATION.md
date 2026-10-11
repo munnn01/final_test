@@ -63,6 +63,10 @@ historical overlap checks, state invariance checks and a paired global merger.
 `scripts/v34_holdout_kaggle.py` prepares four public immutable payloads. Payloads
 contain code, exclusion/annotation/protocol manifests and the three tiny frozen
 controllers; never account credentials or the large task-model weights.
+To fit Kaggle's notebook source limit, the transport retains every committed
+`adaptive_vcm` Python file, every config and `pyproject.toml`; docs, tests and
+local orchestration scripts are omitted. Kept files are exact committed bytes
+and verified individually against the source manifest and original R1 core.
 
 Tests cover official TRAIN exclusion, history exclusion, disjoint deterministic
 shards, failure on insufficient/short data, pixel overlap, paired-grid mismatch,
@@ -72,6 +76,9 @@ and a numerical paired bootstrap with real five-QP binary-accuracy curves,
 and a real x264/x265 holdout run with synthetic external task heads checking that
 GT labels cannot reach source support/Guard. Frozen heads and checkpoint metadata
 are checked against the original R1 output before submission.
+Local validation: all V34 tests passed (52 passed, 2 skipped), including real
+x264/x265 integration. Windows codec temporary files were placed in the writable
+workspace. The skipped tests require external tracking assets not used here.
 
 GPU runs use already authorized public Kaggle notebooks and eligible accounts
 from the existing pool. Submit once with durable intent/acceptance receipts;

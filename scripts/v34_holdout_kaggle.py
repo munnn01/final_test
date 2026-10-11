@@ -12,13 +12,37 @@ import re
 import zipfile
 
 from scripts.v32_mot20_kaggle import source_snapshot, safe_extract
-from scripts.v33ap_kaggle import stored_source
 from scripts.v32rf_kaggle import serialized_source_bytes
 from adaptive_vcm.v34.protocol import digest
 
 REQUIRED = {'source.zip', 'origin.json', 'job.json', 'protocol.json', 'annotations.csv', 'exclusions.json',
             'controller_303401.pth', 'controller_303402.pth', 'controller_303403.pth'}
 MAX_SOURCE = 4_000_000
+
+
+def runtime_source(bundle, origin):
+    """Keep all runtime Python/configs as exact committed bytes; trim transport."""
+    if hashlib.sha256(bundle).hexdigest() != origin['bundle_sha256']:
+        raise ValueError('committed source archive mismatch')
+    stream = io.BytesIO(); kept = {}
+    with zipfile.ZipFile(io.BytesIO(bundle)) as source, zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_STORED) as target:
+        for member in source.infolist():
+            name = member.filename
+            if member.is_dir() or not (name.startswith('adaptive_vcm/') and name.endswith('.py')
+                                      or name.startswith('configs/') or name == 'pyproject.toml'):
+                continue
+            raw = source.read(member)
+            if hashlib.sha256(raw).hexdigest() != origin['source_files_sha256'].get(name):
+                raise ValueError('committed runtime source bytes mismatch')
+            info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0)); info.external_attr = member.external_attr
+            target.writestr(info, raw); kept[name] = hashlib.sha256(raw).hexdigest()
+    if 'adaptive_vcm/v34/holdout.py' not in kept or 'configs/v34_arot_r1.json' not in kept:
+        raise ValueError('required independent runtime source missing')
+    raw = stream.getvalue()
+    return raw, {**origin, 'original_archive_sha256': origin['bundle_sha256'],
+                 'original_archive_bytes': origin['bundle_bytes'], 'bundle_sha256': hashlib.sha256(raw).hexdigest(),
+                 'bundle_bytes': len(raw), 'source_files_sha256': kept,
+                 'transport_repack': 'ZIP_STORED exact committed adaptive_vcm Python, configs and pyproject; docs/tests/scripts excluded'}
 
 
 def pack(members):
@@ -146,7 +170,7 @@ def prepare(account, out, assets, shard):
     if (hashlib.sha256((assets/'annotations.csv').read_bytes()).hexdigest() != protocol['annotation_csv_sha256']
         or hashlib.sha256((assets/'exclusions.json').read_bytes()).hexdigest() != protocol['exclusions_sha256']):
         raise ValueError('pinned annotation/exclusion manifest drift before upload')
-    bundle, origin, _ = source_snapshot(); bundle, origin = stored_source(bundle, origin)
+    bundle, origin, _ = source_snapshot(); bundle, origin = runtime_source(bundle, origin)
     for name, expected in protocol['original_core_sha256'].items():
         if origin['source_files_sha256'].get(name) != expected: raise ValueError('original R1 core changed: '+name)
     job = job_spec(account, origin, protocol, shard)
