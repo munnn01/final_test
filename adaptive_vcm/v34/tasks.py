@@ -73,10 +73,12 @@ class Heads(TaskHeads):
         r.source_predictions={'od':self.detections(r.rgb)}; r.source_features={}
         r.source_detector_seconds=time.perf_counter()-start
         teacher_start=time.perf_counter()
-        if len(r.rgb)>1:
+        r.mask = ([int(self.experiment==task) for task in ('ar','od','ot')]
+                  if self.experiment in ('ar','od','ot') else
+                  [len(r.rgb)>1,self.experiment=='ar_od',self.experiment=='ar_ot' and len(r.rgb)>1])
+        if r.mask[0]:
             logits,f=ar_forward(self.action,tensor(r.rgb,self.device))
             r.source_predictions['ar']=logits.softmax(-1)[0].cpu().numpy(); r.source_features['ar']=f.cpu()
-        r.mask=[len(r.rgb)>1,self.experiment=='ar_od',self.experiment=='ar_ot' and len(r.rgb)>1]
         r.provenance=[('K400 label + source KL/feature' if r.task=='ar' else 'source KL/feature only') if r.mask[0] else None,
             ('COCO boxes + source feature' if r.task=='od' else 'source detection/feature consistency only') if r.mask[1] else None,
             ('MOT20 GT boxes/IDs, local window surrogate' if r.task=='ot' else 'source tracks consistency only') if r.mask[2] else None]
@@ -99,7 +101,7 @@ class Heads(TaskHeads):
             result[0]=float(value)
         if r.mask[1]:
             indices=frame_indices(len(rgb))
-            if r.task=='od':
+            if r.task=='od' and not source_only:
                 targets=[{k:v.to(self.device) for k,v in r.targets.items()}]
                 # Faster R-CNN's GT loss samples proposals even with frozen
                 # weights. Use common random numbers across all candidates.

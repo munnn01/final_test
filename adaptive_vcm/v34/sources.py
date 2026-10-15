@@ -18,7 +18,9 @@ def split_training(items,task,cfg):
 
 def cohorts(ar_root,od_root,annotations,cfg,experiment):
     groups={s:[] for s in ('train','cal','dev','test')}; metadata={}
-    for task,root in [('ar',ar_root)]+([('od',od_root)] if experiment=='ar_od' else []):
+    domains = [('ar',ar_root)] if experiment in ('ar','ar_od','ar_ot') else []
+    if experiment in ('od','ar_od'): domains += [('od',od_root)]
+    for task,root in domains:
         plan_fn=lambda s,n: ar_plan(Path(root),s,n) if task=='ar' else od_plan(Path(root),Path(annotations),s,n)
         training,meta=plan_fn('train',cfg['train_count']+cfg['cal_count'])
         if task=='ar' and meta['unmapped_folders']: raise ValueError('unmapped K400 folders')

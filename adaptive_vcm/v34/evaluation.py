@@ -78,13 +78,13 @@ def choose_packet(model,pair,codec_name,qp,mask,cfg,anchor,encode,*,domain=None,
 @torch.no_grad()
 def received_predictions(packet,heads,transfer_ar,transfer_od,task):
     rgb=packet.decoded; result={}
-    if len(rgb)>1:
+    if len(rgb)>1 and heads.experiment not in ('od','ot'):
         result['ar']={h.name:h.probabilities(rgb) for h in (heads.action,transfer_ar)}
     if task=='od': result['od']=transfer_od.predict(rgb)
     elif heads.experiment=='ar_od':
         from ..v33ap.tasks import frame_indices
         result['od_consistency']=heads.detections(rgb[list(frame_indices(len(rgb)))])
-    else: result['ot_detections']=heads.detections(rgb)
+    elif heads.experiment in ('ar_ot','ot'): result['ot_detections']=heads.detections(rgb)
     return result
 
 def coco_predictions(pred,item,g):
@@ -146,11 +146,11 @@ def summaries(rows,groups,meta,cfg,split):
         rate_scope='paid stream plus common header / canonical pixels; encoder-only maps are not transmitted',target_confirmed=False)
 
 def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
-    transfer_ar=ActionAnalyzer('r3d_18',heads.device)
-    transfer_od=DetectionAnalyzer('resnet50',heads.device) if heads.experiment=='ar_od' else None
+    transfer_ar=ActionAnalyzer('r3d_18',heads.device) if heads.experiment not in ('od','ot') else None
+    transfer_od=DetectionAnalyzer('resnet50',heads.device) if heads.experiment in ('ar_od','od') else None
     from ..v32vc.checkpoint import state_hash
-    write_json(out/'evaluators.json',dict(task_models=heads.hashes(),transfer_ar=state_hash(transfer_ar.model.state_dict()),
-        transfer_od=state_hash(transfer_od.model.state_dict()) if transfer_od else None,tracker='supervision==0.27.0 ByteTrack' if heads.experiment=='ar_ot' else None))
+    write_json(out/'evaluators.json',dict(task_models=heads.hashes(),transfer_ar=state_hash(transfer_ar.model.state_dict()) if transfer_ar else None,
+        transfer_od=state_hash(transfer_od.model.state_dict()) if transfer_od else None,tracker='supervision==0.27.0 ByteTrack' if heads.experiment in ('ar_ot','ot') else None))
     for split in ('dev','test'):
         rows=[]; trackers={}; tracks={}
         for index,r in enumerate(groups[split]):
@@ -162,7 +162,7 @@ def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
             maps=region_maps(source.rgb,source.source_predictions['od']); pair=input_pair(source.rgb,maps)
             support_seconds=source.source_detector_seconds+time.perf_counter()-map_start
             source_seconds=time.perf_counter()-start
-            if r.task=='ot' and cfg.get('revision')=='arot-r1':
+            if r.task=='ot' and cfg.get('revision') in ('arot-r1','r1-qp4-single-task'):
                 from .tracking import ByteTracker,track_frames
                 key=('clean',0,'source',r.item['sequence'])
                 if key not in trackers: trackers[key]=ByteTracker(); tracks[key]=[]
@@ -227,7 +227,7 @@ def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
                                 from .tasks import detection_distance
                                 from ..v33ap.tasks import frame_indices
                                 row['od_source_distance']=detection_distance([source.source_predictions['od'][i] for i in frame_indices(len(r.rgb))],pred['od_consistency'])
-                            else:
+                            elif heads.experiment=='ar_ot':
                                 from .tracking import track_frames,tracking_cost
                                 if 'ot_frames' not in pred: pred['ot_frames']=track_frames(pred['ot_detections'])
                                 row['ot_source_cost']=tracking_cost(pred['ot_frames'],source.source_predictions['ot'])
@@ -237,8 +237,9 @@ def evaluate(groups,heads,models,cfg,meta,out,trackeval_path):
                             key=(codec_name,qp,arm,r.item['sequence'])
                             if key not in trackers: trackers[key]=ByteTracker(); tracks[key]=[]
                             tracks[key].extend(track_frames(pred['ot_detections'],trackers[key]))
-                            p=pred['ar']['swin3d_t']; ref=source.source_predictions['ar']
-                            row['ar_source_kl']=float(np.sum(ref*np.log(np.maximum(ref,1e-10)/np.maximum(p,1e-10))))
+                            if 'ar' in pred:
+                                p=pred['ar']['swin3d_t']; ref=source.source_predictions['ar']
+                                row['ar_source_kl']=float(np.sum(ref*np.log(np.maximum(ref,1e-10)/np.maximum(p,1e-10))))
                             row['ar_accuracy']=None
                         rows.append(row)
             write_json(out/f'{split}_rows.partial.json',rows)

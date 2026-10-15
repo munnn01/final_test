@@ -45,13 +45,24 @@ def measure_candidates(rgb,maps,actions,codec,task,score):
     return dict(rate=[s/sizes[0] for s in sizes],damage=damage,cost=costs,packets=rows)
 
 def validate_cache(cache):
-    if cache.get('schema')!=SCHEMA or cache.get('experiment') not in ('ar_od','ar_ot'):
+    if cache.get('schema')!=SCHEMA or cache.get('experiment') not in ('ar_od','ar_ot','ar','od','ot'):
         raise ValueError('cache schema/experiment mismatch')
     if digest({k:v for k,v in cache.items() if k!='sha256'})!=cache.get('sha256'): raise ValueError('cache content mismatch')
     for r in cache['rows']:
         if r['split'] not in ('train','cal') or r['id'] not in cache['sources'] or cache['sources'][r['id']]['split']!=r['split']:
             raise ValueError('held-out supervision or source mismatch')
         if len(r['rate'])!=len(r['damage']) or not r['mask'][0] and not r['mask'][1] and not r['mask'][2]: raise ValueError('invalid measured mask')
+    if cache['experiment'] in ('ar','od','ot'):
+        task=cache['experiment']; cfg=cache['settings']
+        expected_mask=[int(task==t) for t in ('ar','od','ot')]
+        keys=[(r['id'],r['codec'],r['qp']) for r in cache['rows']]
+        expected={(source,c,q) for source in cache['sources'] for c in cfg['codecs'] for q in cfg['qps']}
+        if len(keys)!=len(set(keys)) or set(keys)!=expected: raise ValueError('incomplete single-task measured grid')
+        for r in cache['rows']:
+            if r['domain']!=task or r['mask']!=expected_mask or len(r['rate'])!=len(ACTIONS):
+                raise ValueError('single-task supervision mismatch')
+            if any(v is not None for row in r['damage'] for k,v in enumerate(row) if not expected_mask[k]):
+                raise ValueError('inactive task damage must remain absent')
     return cache
 
 @torch.no_grad()
@@ -91,13 +102,15 @@ def run(args):
     from .tasks import Heads
     from .evaluation import evaluate
     cfg=settings(getattr(args,'config',None)); out=Path(args.out)
+    single=args.experiment in ('ar','od','ot')
+    if single != (cfg.get('revision')=='r1-qp4-single-task'): raise ValueError('single-task four-QP recipe required')
     if cfg.get('revision')=='arot-r1' and args.experiment!='ar_ot': raise ValueError('AR+OT repair recipe only')
     if out.exists() and any(out.iterdir()): raise ValueError('immutable empty output required')
     out.mkdir(parents=True,exist_ok=True); device='cuda' if torch.cuda.is_available() else 'cpu'
     torch.set_num_threads(2)
     origin=json.loads(Path(args.origin).read_text()); write_json(out/'origin.json',origin)
     groups,meta=cohorts(args.ar_root,args.od_root,args.annotations,cfg,args.experiment)
-    if args.experiment=='ar_ot':
+    if args.experiment in ('ar_ot','ot'):
         from .tracking import tracking_sources
         ot_groups,ot_plan=tracking_sources(Path(args.mot_root),cfg)
         for split in groups: groups[split]+=ot_groups[split]
@@ -130,12 +143,14 @@ def run(args):
     models=train_models(cache,inputs,cfg,out,device,task_models)
     evaluate(groups,heads,models,cfg,meta,out,Path(args.trackeval) if args.trackeval else None)
     write_json(out/'complete.json',dict(status='complete',experiment=args.experiment,cache_sha256=cache['sha256'],
-        checkpoint_sha256=[m.checkpoint_sha256 for m in models],scope='exploratory historical domain pilot; MOT20 has no AR ground truth'))
+        checkpoint_sha256=[m.checkpoint_sha256 for m in models],
+        scope='separate task TRAIN/CAL/DEV/TEST; four-QP exploratory R1 rerun' if single else
+              'exploratory historical domain pilot; MOT20 has no AR ground truth'))
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--experiment',choices=['ar_od','ar_ot'],required=True)
+    p=argparse.ArgumentParser(); p.add_argument('--experiment',choices=['ar_od','ar_ot','ar','od','ot'],required=True)
     p.add_argument('--config')
-    for key in ('ar_root','od_root','annotations','mot_root','trackeval','origin','out'): p.add_argument('--'+key.replace('_','-'),required=key in ('ar_root','origin','out'))
+    for key in ('ar_root','od_root','annotations','mot_root','trackeval','origin','out'): p.add_argument('--'+key.replace('_','-'),required=key in ('origin','out'))
     run(p.parse_args())
 
 if __name__=='__main__': main()

@@ -18,8 +18,9 @@ ACTIONS = (
 
 def settings(path=None):
     cfg = json.loads((Path(path) if path else ROOT/'configs/v34.json').read_text())
+    qps = [30,35,40,45] if cfg.get('revision')=='r1-qp4-single-task' else [30,35,40,45,50]
     if (cfg['schema'] != SCHEMA or cfg['codecs'] != ['h264','h265']
-        or cfg['qps'] != [30,35,40,45,50] or cfg['seeds'] != [303401,303402,303403]
+        or cfg['qps'] != qps or cfg['seeds'] != [303401,303402,303403]
         or cfg['frames'] != 16 or cfg['preset'] != 'medium'):
         raise ValueError('V34 recipe drift')
     return cfg

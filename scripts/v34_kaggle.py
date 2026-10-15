@@ -13,18 +13,25 @@ from scripts.v33ap_kaggle import pack,unpack,stored_source,REQUIRED,OPTIONAL
 from adaptive_vcm.v34.protocol import settings,ACTIONS,ROOT
 
 def job_spec(experiment,account,origin,recipe='original'):
-    if experiment not in ('ar_od','ar_ot') or not re.fullmatch('[a-zA-Z0-9_-]+',account) or not re.fullmatch('[0-9a-f]{40}',origin['origin_commit']):
+    single=experiment in ('ar','od','ot')
+    if experiment not in ('ar_od','ar_ot','ar','od','ot') or not re.fullmatch('[a-zA-Z0-9_-]+',account) or not re.fullmatch('[0-9a-f]{40}',origin['origin_commit']):
         raise ValueError('invalid job/account/origin')
-    if recipe not in ('original','arot-r1') or recipe=='arot-r1' and experiment!='ar_ot': raise ValueError('invalid repair recipe')
-    slug='v34-'+experiment.replace('_','-')+('-r1' if recipe=='arot-r1' else '')+'-'+origin['origin_commit'][:8]
-    config='configs/v34_arot_r1.json' if recipe=='arot-r1' else None
+    if (recipe not in ('original','arot-r1','r1-qp4-single-task') or single!=(recipe=='r1-qp4-single-task')
+        or recipe=='arot-r1' and experiment!='ar_ot'): raise ValueError('invalid repair recipe')
+    suffix='-r1-qp4' if single else '-r1' if recipe=='arot-r1' else ''
+    slug='v34-'+experiment.replace('_','-')+suffix+'-'+origin['origin_commit'][:8]
+    config='configs/v34_r1_qp4.json' if single else 'configs/v34_arot_r1.json' if recipe=='arot-r1' else None
+    datasets=(['qktttttttttt/kineticscleaned'] if experiment=='ar' else
+              ['awsaf49/coco-2017-dataset'] if experiment=='od' else []) if single else (
+              ['qktttttttttt/kineticscleaned']+(['awsaf49/coco-2017-dataset'] if experiment=='ar_od' else []))
     job=dict(schema='v34-kaggle-1',experiment=experiment,slug=slug,handle=account+'/'+slug,private=False,
         origin_commit=origin['origin_commit'],protocol=settings(ROOT/config if config else None),actions=[list(a) for a in ACTIONS],
-        datasets=['qktttttttttt/kineticscleaned']+(['awsaf49/coco-2017-dataset'] if experiment=='ar_od' else []),
+        datasets=datasets,
         hf=dict(repo_id=HF_REPO,revision=HF_REVISION),sequences=['MOT20-02','MOT20-03','MOT20-01'],
         trackeval_repo=TRACKEVAL_REPO,trackeval_commit=TRACKEVAL_COMMIT,
         scope='actual-codec supervised adaptive filtering; three seeds; exploratory domain pilot; no confirmed gain; MOT20 AR has no GT')
     if config: job.update(recipe=recipe,config_path=config,scope=job['scope']+'; source-only real-codec guard is not a task-accuracy guarantee')
+    if single: job.update(active_tasks=[experiment],scope='separate '+experiment.upper()+' TRAIN/CAL/DEV/TEST; newly measured four-QP targets; newly trained three-seed controllers; source-only guard; exploratory historical cohorts')
     return job
 
 RUNTIME=r'''
@@ -61,15 +68,18 @@ try:
     from adaptive_vcm.v34.protocol import settings,ACTIONS
     config=REPO/JOB['config_path'] if JOB.get('config_path') else None
     if settings(config)!=JOB['protocol'] or [list(a) for a in ACTIONS]!=JOB['actions']: raise ValueError('runtime recipe drift')
-    ar_root,_=mount_data(Path('/kaggle/input'),'ar')
-    command=[sys.executable,'-u','-m','adaptive_vcm.v34.runner','--experiment',JOB['experiment'],'--ar-root',str(ar_root),
+    command=[sys.executable,'-u','-m','adaptive_vcm.v34.runner','--experiment',JOB['experiment'],
         '--origin',str(OUT/'source-origin.json'),'--out',str(OUT/'experiment')]
     if config: command+=['--config',str(config)]
-    if JOB['experiment']=='ar_od':
+    mounts={}
+    if JOB['experiment'] in ('ar','ar_od','ar_ot'):
+        ar_root,_=mount_data(Path('/kaggle/input'),'ar')
+        command+=['--ar-root',str(ar_root)]; mounts['ar']=str(ar_root)
+    if JOB['experiment'] in ('od','ar_od'):
         od_root,ann=mount_data(Path('/kaggle/input'),'od')
         command+=['--od-root',str(od_root),'--annotations',str(ann)]
-        save('data-mount.json',dict(ar=str(ar_root),od=str(od_root),annotations=str(ann)))
-    else:
+        mounts.update(od=str(od_root),annotations=str(ann))
+    if JOB['experiment'] in ('ot','ar_ot'):
         status['stage']='download_MOT20'; save('status.json',status)
         from huggingface_hub import hf_hub_download
         DATA=WORKING/'mot20'; TRACKEVAL=WORKING/'TrackEval'
@@ -87,7 +97,8 @@ try:
         run(['git','clone','--quiet',JOB['trackeval_repo'],str(TRACKEVAL)])
         run(['git','-C',str(TRACKEVAL),'checkout','--quiet',JOB['trackeval_commit']])
         command+=['--mot-root',str(DATA/'train'),'--trackeval',str(TRACKEVAL)]
-        save('data-mount.json',dict(ar=str(ar_root),mot=str(DATA/'train'),trackeval=str(TRACKEVAL)))
+        mounts.update(mot=str(DATA/'train'),trackeval=str(TRACKEVAL))
+    save('data-mount.json',mounts)
     status['stage']='measure_train_evaluate'; save('status.json',status)
     run(command,cwd=str(REPO)); status.update(status='complete',stage='complete')
 except Exception:
@@ -160,8 +171,8 @@ def submit(client,account,directory):
     return save(value)
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--experiment',choices=['ar_od','ar_ot'],required=True); p.add_argument('--account',required=True); p.add_argument('--out',type=Path,required=True)
-    p.add_argument('--recipe',choices=['original','arot-r1'],default='original')
+    p=argparse.ArgumentParser(); p.add_argument('--experiment',choices=['ar_od','ar_ot','ar','od','ot'],required=True); p.add_argument('--account',required=True); p.add_argument('--out',type=Path,required=True)
+    p.add_argument('--recipe',choices=['original','arot-r1','r1-qp4-single-task'],default='original')
     a=p.parse_args(); print(json.dumps(prepare(a.experiment,a.account,a.out,a.recipe)))
 
 if __name__=='__main__': main()
