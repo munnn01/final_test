@@ -21,6 +21,13 @@ def heads():
     return h
 
 
+def fixture_origin():
+    from adaptive_vcm.v34r2.protocol import ROOT
+    paths=[*(ROOT/'adaptive_vcm/v34r2').glob('*.py'),ROOT/'configs/v34_r2_qp4.json']
+    return dict(origin_commit='a'*40,bundle_sha256='b'*64,
+        source_files_sha256={p.relative_to(ROOT).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in paths})
+
+
 def test_runtime_uses_all_active_source_constraints_and_commits_only_winner():
     from types import SimpleNamespace
     prefix=Prefix(); before=prefix.signature
@@ -67,7 +74,7 @@ def test_joint_end_to_end_keeps_heldout_gt_out_of_guard(tmp_path):
         r=records[1]; r.item=dict(image_id=i,width=24,height=24)
         meta['od']['annotations'].append(dict(id=i,image_id=i,category_id=1,bbox=[4,4,12,12],area=144,iscrowd=0))
         if split in ('dev','test'): r.targets={'must_not_enter_source_guard':True}
-    origin=dict(origin_commit='a'*40,bundle_sha256='b'*64)
+    origin=fixture_origin()
     run_records(groups,meta,cfg,tmp_path,origin,heads(),'ar_od_ot',load_trackeval(os.environ['V34_TRACKEVAL']),transfer_ar=TinyAction())
     cache=json.loads((tmp_path/'measurements.json').read_text()); validate_cache(cache)
     assert all(r['gt_mask']==([1,0,0] if r['domain']=='ar' else [0,1,0]) for r in cache['rows'])
@@ -105,7 +112,7 @@ def test_ot_two_window_end_to_end_preserves_prefix_and_official_metrics(tmp_path
             if split in ('dev','test'): r.targets={'heldout_GT_must_not_enter_guard':True}
             groups[split].append(r)
     out=tmp_path/'experiment'
-    run_records(groups,{'ot':plans},cfg,out,dict(origin_commit='a'*40,bundle_sha256='b'*64),heads(),'ot',load_trackeval(os.environ['V34_TRACKEVAL']))
+    run_records(groups,{'ot':plans},cfg,out,fixture_origin(),heads(),'ot',load_trackeval(os.environ['V34_TRACKEVAL']))
     rows=json.loads((out/'test_rows.json').read_text())
     cnn=[r for r in rows if r['arm']=='cnn_303401']
     assert len(cnn)==2 and cnn[1]['prefix_before']==cnn[0]['prefix_after']

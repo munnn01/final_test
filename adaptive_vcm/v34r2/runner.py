@@ -7,7 +7,7 @@ import time
 import numpy as np
 import torch
 from . import SCHEMA
-from .protocol import ACTIONS,TASKS,settings,task_mask,seal,validate_cache,digest,codec_factory
+from .protocol import ACTIONS,TASKS,settings,task_mask,seal,validate_cache,validate_origin,digest,codec_factory
 from .preprocessing import Support
 from .tracking import Prefix
 from .tasks import Heads
@@ -102,7 +102,9 @@ def load_checkpoint(path,device='cpu'):
 
 
 def train_models(cache,inputs,cfg,out,device,heads):
-    validate_cache(cache); fit=[r for r in cache['rows'] if r['split']=='train']; cal=[r for r in cache['rows'] if r['split']=='cal']
+    validate_cache(cache)
+    if cache['settings']!=cfg or cache['task_models']!=heads.hashes(): raise ValueError('cache/current recipe or frozen heads mismatch')
+    fit=[r for r in cache['rows'] if r['split']=='train']; cal=[r for r in cache['rows'] if r['split']=='cal']
     fixed=fixed_shortlist(fit,cfg); models=[]
     for seed in cfg['seeds']:
         np.random.seed(seed); torch.manual_seed(seed)
@@ -119,6 +121,7 @@ def train_models(cache,inputs,cfg,out,device,heads):
 
 
 def run_records(groups,meta,cfg,out,origin,heads,experiment,package=None,transfer_ar=None):
+    validate_origin(origin,verify_files=True)
     out=Path(out)
     if out.exists() and any(out.iterdir()): raise ValueError('immutable empty R2 output required')
     out.mkdir(parents=True,exist_ok=True); torch.set_num_threads(2)
@@ -131,7 +134,7 @@ def run_records(groups,meta,cfg,out,origin,heads,experiment,package=None,transfe
                 seq=stream_key(r)
                 if seq in sequence_splits and sequence_splits[seq]!=split: raise ValueError('OT sequence split leakage')
                 sequence_splits[seq]=split
-            sources[r.id]=dict(split=split,pixel_sha256=sha,frame_recipe=r.frame_recipe)
+            sources[r.id]=dict(split=split,domain=r.task,frames=len(r.rgb),pixel_sha256=sha,frame_recipe=r.frame_recipe)
             pixels.add(sha)
     write_json(out/'cohorts.json',sources); write_json(out/'origin.json',origin)
     cache=dict(schema=SCHEMA,experiment=experiment,settings=cfg,origin=origin,task_models=heads.hashes(),actions=[list(a) for a in ACTIONS],
@@ -191,6 +194,7 @@ def main():
     for key in ('ar_root','od_root','annotations','mot_root','trackeval','origin','out'):
         p.add_argument('--'+key.replace('_','-'),required=key in ('origin','out'))
     args=p.parse_args(); cfg=settings(args.config)
+    origin=validate_origin(json.loads(Path(args.origin).read_text()),verify_files=True)
     cfg['ablation']=args.ablation
     if args.ablation in ('baseline','map_only'): cfg['target_policy']='legacy'
     if args.ablation in ('baseline','target_only'): cfg['support_policy']='legacy'
@@ -204,7 +208,7 @@ def main():
     if args.experiment=='ar_od_ot':
         from ..analyzers import ActionAnalyzer
         transfer_ar=ActionAnalyzer('r3d_18',device)
-    run_records(groups,meta,cfg,Path(args.out),json.loads(Path(args.origin).read_text()),heads,args.experiment,package,transfer_ar)
+    run_records(groups,meta,cfg,Path(args.out),origin,heads,args.experiment,package,transfer_ar)
 
 
 if __name__=='__main__': main()

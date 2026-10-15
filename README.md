@@ -1,5 +1,12 @@
 # Adaptive Video Preprocessing for VCM
 
+**V34 R2, 2026-10-16:** task-aware OD/OT preprocessing and a shared AR+OD+OT
+packet, using x264/x265 at QPs **30/35/40/45**. R2 adds independent GT/source
+targets, transactional continuous tracking, and equal-budget CNN/fixed/random
+selection controls. Legacy AR/R1 remains unchanged. See [R2 design, commands,
+ablations and limitations](docs/V34_R2.md). Local integration tests do not
+establish real-data mAP/HOTA or BD-rate gains.
+
 **V32, 2026-10-08:** mở rộng ROI simplification và retargeting nền factor2/4,
 khôi phục bằng grid truyền trong packet, tính cả overhead khi chọn luồng.
 Có thể kết hợp checkpoint V30-B frozen qua loader provenance gốc. Xem

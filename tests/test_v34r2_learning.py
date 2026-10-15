@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import numpy as np
 import pytest
 import torch
@@ -14,8 +15,8 @@ def row(split='train', source='a', group='a'):
         active=[0,1,0],gt_mask=[0,1,0],rate=[1,.7]+[1.2]*11,
         gt_damage=[[None,0,None],[None,.02,None]]+[[None,.3,None]]*11,
         source_damage=[[None,0,None],[None,0,None]]+[[None,.5,None]]*11,
-        prefix_sha256='a'*64,packets=[dict(bytes=100 if i==0 else 70 if i==1 else 120,
-            sha256=str(i)*64) for i in range(13)])
+        prefix_sha256='a'*64,packets=[dict(bytes=100 if i==0 else 70 if i==1 else 120,prefix_sha256='a'*64,
+            decoded_sha256=hashlib.sha256(str(i).encode()).hexdigest(),sha256=hashlib.sha256(str(i).encode()).hexdigest()) for i in range(13)])
 
 
 def test_two_way_detection_damage_penalizes_fp_class_and_confidence():
@@ -62,7 +63,9 @@ def test_controller_has_separate_gt_source_feasibility_and_rate_heads():
 def test_cache_rejects_joint_fake_gt_and_legacy_checkpoint_recipe():
     cfg=settings(); cfg.update(codecs=['h264'],qps=[30])
     cache=seal(dict(schema=cfg['schema'],settings=cfg,experiment='od',rows=[row()],
-        sources={'a':dict(split='train',pixel_sha256='b'*64)},origin={'origin_commit':'c'*40,'bundle_sha256':'d'*64}))
+        actions=[list(a) for a in __import__('adaptive_vcm.v34r2.protocol',fromlist=['ACTIONS']).ACTIONS],
+        task_models={t:dict(name=t,state_sha256='e'*64) for t in ('ar','od')},
+        sources={'a':dict(split='train',domain='od',frames=1,frame_recipe={},pixel_sha256='b'*64)},origin={'origin_commit':'c'*40,'bundle_sha256':'d'*64}))
     validate_cache(cache)
     bad=copy.deepcopy(cache); bad['rows'][0]['gt_mask']=[1,1,1]
     with pytest.raises(ValueError): validate_cache(seal(bad))

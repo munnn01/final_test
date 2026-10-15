@@ -54,6 +54,9 @@ def shortlist(model,pair,c,qp,active,cfg,domain,kind,identifier):
 
 @torch.no_grad()
 def evaluate(groups,meta,cfg,out,heads,models,experiment,package,transfer_ar):
+    task_models=heads.hashes()
+    if any(m.metadata.get('settings')!=cfg or m.metadata.get('experiment')!=experiment or m.metadata.get('task_models')!=task_models for m in models):
+        raise ValueError('R2 checkpoint/current settings, experiment or frozen heads mismatch')
     for split in ('dev','test'):
         rows=[]; clean={}; supports={}; prefixes={}; receivers={}; tracks={}; exhaustive=[]; gt_history={}
         for index,r in enumerate(groups[split]):
@@ -149,19 +152,53 @@ def coco_stats(results,gt,ids,meta):
     from pycocotools.coco import COCO
     from pycocotools.cocoeval import COCOeval
     names=['mAP','AP50','AP75','APsmall','APmedium','APlarge']
-    if not results: return {k:0. for k in names}
     with contextlib.redirect_stdout(io.StringIO()):
         dataset=COCO(); dataset.dataset=dict(info=meta.get('info',{}),images=[dict(id=i) for i in ids],annotations=[a for i in ids for a in gt[i]],categories=meta['categories'])
-        dataset.createIndex(); dt=dataset.loadRes(results); evaluator=COCOeval(dataset,dt,'bbox'); evaluator.params.imgIds=ids
+        dataset.createIndex()
+        if results: dt=dataset.loadRes(results)
+        else:
+            dt=COCO(); dt.dataset=dict(images=dataset.dataset['images'],categories=meta['categories'],annotations=[]); dt.createIndex()
+        evaluator=COCOeval(dataset,dt,'bbox'); evaluator.params.imgIds=ids
         evaluator.evaluate(); evaluator.accumulate(); evaluator.summarize()
     return {k:float(evaluator.stats[i]) if evaluator.stats[i]>=0 else None for i,k in enumerate(names)}
 
 
 def comparison(anchor,other):
     value=safe_curve(anchor,other); monotone=value.get('quality_monotone_by_rate',{})
-    if not all(monotone.get(k,False) for k in ('anchor','adaptive')):
-        value.update(bd_rate_pct=None,pchip_bd_rate_pct=None,bd_quality_pp=None,invalid_reason='nonmonotone or insufficient curve; inspect raw same-QP points')
+    if value.get('invalid_reason') or not all(monotone.get(k,False) for k in ('anchor','adaptive')):
+        value.update(bd_rate_pct=None,pchip_bd_rate_pct=None,bd_quality_pp=None,point_passes=False,screen_passes=False,
+            bd_reliable=False,invalid_reason=value.get('invalid_reason') or 'nonmonotone or insufficient curve; inspect raw same-QP points')
+        for k in value.get('guards',{}):
+            if k.startswith(('canonical_bd','pchip_bd','bd_quality')): value['guards'][k]=False
+    else: value['bd_reliable']=True
     return value
+
+
+def paired_bootstrap_detection_bd(records,*,codec,qps,gt_by_id,image_ids,ann_meta,arms,n_boot,seed=0,metric_fn=None):
+    """Pair images with replacement; each draw follows the primary BD validity rule."""
+    from ..coco_metrics import _remap_bootstrap_sample
+    if n_boot<=0: return {}
+    ids=list(image_ids); draws={a:[] for a in arms}; rng=np.random.default_rng(seed)
+    metric_fn=metric_fn or (lambda predictions,gt,ids,meta:coco_stats(predictions,gt,ids,meta)['mAP'])
+    if len(ids)>=2:
+        for _ in range(n_boot):
+            sample=rng.choice(ids,len(ids),replace=True).tolist()
+            gt,new_ids,mapping=_remap_bootstrap_sample(sample,gt_by_id); curves={}
+            for arm in ['anchor',*arms]:
+                curve=dict(bpp=[],quality=[])
+                for qp in qps:
+                    table=records[arm][(codec,qp)]; predictions=[]
+                    for old,new in mapping: predictions.extend({**p,'image_id':new} for p in table[old][1])
+                    curve['bpp'].append(float(np.mean([table[old][0] for old,_ in mapping])))
+                    curve['quality'].append(metric_fn(predictions,gt,new_ids,ann_meta))
+                curves[arm]=curve
+            for arm in arms:
+                value=comparison(curves['anchor'],curves[arm]).get('bd_rate_pct')
+                if value is not None and np.isfinite(value): draws[arm].append(float(value))
+    return {arm:dict(lo=float(np.quantile(values,.025)) if values else None,hi=float(np.quantile(values,.975)) if values else None,
+        p_lt_zero=float(np.mean(np.array(values)<0)) if values else None,n_draws=len(values),requested_draws=n_boot,
+        valid_fraction=len(values)/n_boot,method='paired_image_bootstrap_with_replacement; invalid BD draws excluded',
+        scope='conditional on valid draws; inspect valid_fraction; no interval when no draws are valid') for arm,values in draws.items()}
 
 
 def summarize(rows,records,meta,cfg):
@@ -186,7 +223,6 @@ def summarize(rows,records,meta,cfg):
                 curves[arm]=curve
             result=dict(curves=curves,raw_points=points,comparisons={a:comparison(curves['anchor'],v) for a,v in curves.items() if a!='anchor'})
             if task=='od' and cfg['bootstrap_draws']:
-                from ..coco_metrics import paired_bootstrap_detection_bd
                 table={arm:{(c,qp):{r.item['image_id']:next((v['bpp'],v['coco']) for v in subset if v['id']==r.id and v['codec']==c and v['qp']==qp and v['arm']==arm)
                     for r in records if r.task=='od'} for qp in cfg['qps']} for arm in curves}
                 result['paired_image_bootstrap']=paired_bootstrap_detection_bd(table,codec=c,qps=cfg['qps'],gt_by_id=gt,

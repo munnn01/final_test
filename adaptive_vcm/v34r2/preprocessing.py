@@ -12,6 +12,7 @@ def union_maps(maps):
         if (m.shape != maps[0].shape or not np.isfinite(m).all() or m.min()<0
             or not np.allclose(m.sum(-1),1,atol=1e-5)):
             raise ValueError('invalid region partition')
+    if len(maps)==1: return maps[0].copy()
     core=np.maximum.reduce([m[...,0] for m in maps])
     protected=np.maximum.reduce([m[...,0]+m[...,1] for m in maps])
     context=np.maximum(0,protected-core)
