@@ -16,7 +16,7 @@ Every OT evaluation starts at frame one of its full sequence. The interrupted ru
 
 The continuation verifies inherited artifact bytes, cache integrity, task-head hashes, full source-cohort pixel hashes, action bank and settings. Scientific source files must match the inherited snapshot; the runner/evaluator orchestration files are the explicit exceptions for this continuation. Both training origin and executing origin are retained. Cached tracking anchors are re-encoded and must match packet/decoded/prefix hashes before their identity prefix can advance.
 
-The initial parent kernel versions are pinned to `/1`. All continuation notebooks are private and restricted to the five accounts explicitly selected for this experiment. If the trained joint state must cross accounts, the local workflow creates a private, content-checked state dataset owned by each destination account. No raw images/video or credentials enter those state datasets. Dataset version 1 is never overwritten by this workflow.
+The interrupted parent kernel versions `/1` remain provenance references. Kaggle rejected those cancelled notebooks as input sources, even while reporting a successful notebook push. The workflow therefore copies the locally recovered state into private, content-checked datasets owned by each execution account. The trained joint state uses the same transport. No raw images/video or credentials enter those state datasets. Dataset version 1 is never overwritten by this workflow. Rejected input-attachment warnings stop dispatch even if the CLI reports a successful push.
 
 ## Run the durable workflow
 
@@ -32,3 +32,5 @@ python -m scripts.v34r2_continue_workflow `
 Without `--run`, dispatch/check one bounded iteration. Every submission/upload writes its intent before the remote call. Ambiguous outcomes are never blindly retried. A failed dependency cannot start its descendants. The workflow verifies stage manifests before merging non-overlapping output scopes and writing the final completion marker.
 
 This dispatcher runs locally; the host must remain running to dispatch downstream stages. Submitted GPU work itself runs on Kaggle. An `attention.json` or `needs_attention` state requires diagnosis before restarting; existing accepted notebooks are preserved.
+
+Use a new workflow directory for the dataset-based relaunch after the initial rejected-input attempt. Its plan records the original parent references, recovered file paths/hashes, new immutable source commit and each private dataset receipt separately.

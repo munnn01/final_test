@@ -4,7 +4,7 @@
 
 **Goal:** Continue the two timed-out R2 experiments using their saved measurements/checkpoints and sessions smaller than twelve hours.
 
-**Architecture:** Keep the original scientific settings and action selection unchanged. Add execution-only codec/domain/split scopes to evaluation and a separate continuation entry point. Complete the joint measurement cache by replaying only identity prefixes for already measured tracking windows, train once, then evaluate complete sequences in separate jobs. A durable local workflow dispatches downstream jobs after their pinned input kernel version completes.
+**Architecture:** Keep the original scientific settings and action selection unchanged. Add execution-only codec/domain/split scopes to evaluation and a separate continuation entry point. Complete the joint measurement cache by replaying only identity prefixes for already measured tracking windows, train once, then evaluate complete sequences in separate jobs. A durable local workflow transports recovered/trained state through private datasets and dispatches downstream jobs after verifying completed artifacts.
 
 **Spec:** User request to run the timed-out parts again, following the result audit and proposal to save/reload state across sessions. The five explicitly authorized accounts remain the allowed deployment destinations. AR/OD completed runs remain untouched.
 
@@ -37,7 +37,7 @@
 - [x] Prepare scoped payloads with pinned kernel inputs; validate embedded source/artifact manifests and compile notebook cells.
 - [x] Test stage readiness, idempotent receipts, failed/unknown dependency states and account allowlist behavior.
 - [x] Run focused continuation tests and the existing R2 suite, then obtain one independent final review.
-- [ ] Commit/push the verified code to the previously authorized GitHub repository.
+- [x] Commit/push the verified code to the previously authorized GitHub repository (initial continuation commit `1e10a1e9`; transport fix follows).
 - [ ] Preflight the requested accounts, submit OT scopes and joint measurement continuation, verify accepted versions/status and start the durable downstream workflow.
 
 ## Review focus
@@ -52,3 +52,6 @@ Same source pixels with changed task heads; mixed cache origins; identity prefix
 - Verification: execution-scope RED 5 failures -> GREEN 5; resume RED 3 failures -> GREEN 8 total; payload RED 6 -> GREEN 6; dispatch RED 3 -> GREEN 3; additional cohort/privacy RED 2 -> expanded suite GREEN 54/54 (128.40s).
 - Final independent review: approved with one recovery-path finding. The reviewer graded the missing `version` in a pre-push intent as Minor; the implementer regraded it Important because interrupted submission recovery is a central requirement. A targeted test reproduced the restart `KeyError`; one fix pass normalizes legacy intents to `version=None` and rejects a receipt for another handle. Targeted GREEN: 1/1. No other review findings; no additional review cycle.
 - Final post-fix verification: all 55 R2 tests passed in 122.36s; `git diff --check` clean; R1 implementation/configuration/launcher unchanged from the published baseline.
+- Live deployment finding: Kaggle's CLI accepted all five notebooks but warned that the cancelled parent kernels were not valid input sources. Four OT jobs failed immediately at inherited-state validation; no model evaluation ran. The first workflow stopped on those terminal errors. Preserve those receipts and relaunch from a new workflow directory using verified recovered files in private datasets owned by each execution account. Use the same dataset transport for trained joint artifacts.
+- Deployment regression RED: rejected-input warning falsely classified as submitted, and recovered-state dataset transport unavailable (2 failures). GREEN: 6/6 workflow tests after the targeted fix. This is a live integration repair, not a new scientific method or another review cycle.
+- Transport repair verification: all 57 R2 tests passed in 131.35s. Only workflow transport/receipt handling changed; the tested scientific implementation remains the `1e10a1e9` implementation.

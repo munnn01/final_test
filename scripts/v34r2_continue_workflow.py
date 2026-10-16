@@ -77,7 +77,7 @@ def initialize(root,results_root):
     commit=subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],text=True).strip()
     # source_snapshot enforces a clean, fully committed transport before a launch.
     payload.source_snapshot()
-    parents={}; cohorts={}
+    parents={}; cohorts={}; recovered_files={}
     originals={'ot':'trnhlng/v34-r2-ot-combined-qp4-b37c4937/1',
                'ar_od_ot':'thuha1205/v34-r2-ar-od-ot-combined-qp4-b37c4937/1'}
     for task in originals:
@@ -88,6 +88,7 @@ def initialize(root,results_root):
         files['cohorts.json']=one(Path(results_root)/'artifacts'/task,'cohorts.json')
         cohorts[task]=load(files['cohorts.json'])
         parents[task]=dict(kind='kernel',ref=originals[task],files=manifest(files))
+        recovered_files[task]={n:str(p) for n,p in files.items()}
     jobs=[]
     def add(identifier,account,experiment,stage,scope,depends,hours):
         entry=dict(id=identifier,account=account,experiment=experiment,stage=stage,scope=scope,depends=depends,estimated_gpu_hours=hours)
@@ -104,7 +105,7 @@ def initialize(root,results_root):
     for split,account in [('test','qktttttttttt'),('dev','trmnguyn111')]:
         for c in ('h264','h265'):
             add(f'joint-ot-{c}-{split}',account,'ar_od_ot','evaluate',dict(codecs=[c],splits=[split],domains=['ot']),['joint-train'],8 if split=='dev' else 4)
-    plan=dict(schema='v34-r2-continuation-workflow-1',source_commit=commit,parents=parents,jobs=jobs,
+    plan=dict(schema='v34-r2-continuation-workflow-2',source_commit=commit,parents=parents,recovered_files=recovered_files,jobs=jobs,
               created_utc=datetime.now(timezone.utc).isoformat(),accounts=sorted(payload.ACCOUNTS),private=True)
     save(plan_path,plan); save(root/'state.json',dict(jobs={},datasets={},status='prepared'))
     return plan
@@ -151,7 +152,9 @@ def checked_submit(client,directory):
     evidence=client.call(account,['kernels','push','-p',str(directory)],timeout=90)
     output=evidence['stdout']+evidence['stderr']; match=re.search(r'Kernel version (\d+) successfully pushed',output,re.I)
     accepted=evidence['exit_code']==0 and match and 'https://www.kaggle.com/code/'+meta['id'] in output
-    result=dict(status='SUBMITTED' if accepted else 'AMBIGUOUS',handle=meta['id'],version=int(match[1]) if accepted else None,evidence=evidence)
+    input_error='could not be added' in output.lower() or 'not valid kernel sources' in output.lower() or 'not valid dataset sources' in output.lower()
+    status=('INPUT_ERROR' if input_error else 'SUBMITTED') if accepted else 'AMBIGUOUS'
+    result=dict(status=status,handle=meta['id'],version=int(match[1]) if accepted else None,evidence=evidence)
     save(receipt,result); return result
 
 
@@ -170,25 +173,31 @@ def collect_stage(client,root,entry,state):
     state.update(stage_verified=True,artifacts=str(directory),completion=result)
 
 
-def private_parent(client,root,plan,state,account):
-    files=artifact_files(state['jobs']['joint-train']['artifacts']); hashes=manifest(files)
-    trained=state['jobs']['joint-train']
-    if account=='baoancut': return dict(kind='kernel',ref=trained['handle']+'/'+str(trained['version']),files=hashes)
-    ref=account+'/v34-r2-joint-state-'+plan['source_commit'][:8]
-    receipt=state['datasets'].get(account)
+def private_parent(client,root,plan,state,account,*,experiment=None):
+    if experiment is not None:
+        files={n:Path(p) for n,p in plan['recovered_files'][experiment].items()}
+        hashes=manifest(files)
+        if hashes!=plan['parents'][experiment]['files']: raise ValueError('recovered local artifacts changed')
+        label=experiment.replace('_','-')+'-recovered'
+    else:
+        files=artifact_files(state['jobs']['joint-train']['artifacts']); hashes=manifest(files)
+        label='joint-trained'
+    ref=account+'/v34-r2-'+label+'-state-'+plan['source_commit'][:8]
+    key=label+':'+account; receipt=state['datasets'].get(key)
     if receipt is None:
-        directory=root/'private_states'/account; directory.mkdir(parents=True,exist_ok=True)
+        directory=root/'private_states'/label/account; directory.mkdir(parents=True,exist_ok=True)
         for name,path in files.items(): shutil.copyfile(path,directory/name)
         if any(s.encode() in p.read_bytes() for s in client.secrets if s for p in directory.iterdir() if p.is_file()):
             raise ValueError('credential scan failed for private inherited state')
-        save(directory/'dataset-metadata.json',dict(id=ref,title='V34 R2 joint state '+plan['source_commit'][:8],licenses=[dict(name='unknown')],
+        save(directory/'dataset-metadata.json',dict(id=ref,title='V34 R2 '+label+' '+plan['source_commit'][:8],licenses=[dict(name='unknown')],
             description='Private continuation state for the same interrupted experiment; no raw images or video.'))
-        receipt=dict(status='AMBIGUOUS',ref=ref,files=hashes); state['datasets'][account]=receipt; save(root/'state.json',state)
-        evidence=client.call(account,['datasets','create','-p',str(directory)],timeout=240)
+        receipt=dict(status='AMBIGUOUS',ref=ref,files=hashes); state['datasets'][key]=receipt; save(root/'state.json',state)
+        evidence=client.call(account,['datasets','create','-p',str(directory),'--keep-tabular'],timeout=240)
         receipt['evidence']=evidence
         if evidence['exit_code']==0 and 'Your private Dataset is being created' in evidence['stdout']:
             receipt['status']='CREATING'
         save(root/'state.json',state)
+    if receipt['files']!=hashes or receipt['ref']!=ref: raise ValueError('private state receipt mismatch')
     if receipt['status']=='AMBIGUOUS': raise ValueError('private state upload ambiguous; reconcile before retry')
     evidence=client.call(account,['datasets','status',ref]); receipt['status_evidence']=evidence
     if evidence['exit_code']!=0 or 'ready' not in evidence['stdout'].lower(): return None
@@ -239,7 +248,8 @@ def advance(root,plan,client):
     ready=ready_jobs(plan['jobs'],state['jobs'],{a:v['active'] for a,v in capacities.items()})
     for entry in ready:
         if entry['account'] not in capacities or capacities[entry['account']]['hours']<entry['estimated_gpu_hours']: continue
-        parent=plan['parents'][entry['experiment']] if not entry['depends'] else private_parent(client,root,plan,state,entry['account'])
+        parent=private_parent(client,root,plan,state,entry['account'],
+                              experiment=entry['experiment'] if not entry['depends'] else None)
         if parent is None: continue
         directory=root/'payloads'/entry['id']
         if not directory.exists():
@@ -248,7 +258,8 @@ def advance(root,plan,client):
         state['jobs'][entry['id']]=item; capacities[entry['account']]['hours']-=entry['estimated_gpu_hours']
         save(root/'state.json',state)
         print(json.dumps(dict(job=entry['id'],**{k:item[k] for k in ('status','handle','version')})),flush=True)
-    failed=[k for k,v in state['jobs'].items() if v['status'] in (TERMINAL-{'COMPLETE'})|{'AMBIGUOUS'}]
+        if item['status']=='INPUT_ERROR': break
+    failed=[k for k,v in state['jobs'].items() if v['status'] in (TERMINAL-{'COMPLETE'})|{'AMBIGUOUS','INPUT_ERROR'}]
     state['status']='needs_attention' if failed else 'running'; state['failed_jobs']=failed
     state['updated_utc']=datetime.now(timezone.utc).isoformat(); save(root/'state.json',state)
     return state
