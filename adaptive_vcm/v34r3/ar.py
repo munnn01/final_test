@@ -33,3 +33,17 @@ def load_reference(manifest, device='cpu'):
             or meta.get('task_models')!=manifest.get('task_models') or 'calibration' not in meta):
             raise ValueError('frozen AR checkpoint/recipe/model mismatch')
     return cfg,models
+
+
+def evaluate_reference(groups,heads,models,cfg,meta,out,trackeval_path):
+    from ..v34.evaluation import evaluate
+    from ..v34.runner import write_json
+    from ..v32vc.checkpoint import state_hash
+    if heads.experiment!='ar' or any(m.metadata['settings']!=cfg or m.metadata['experiment']!='ar'
+        or m.metadata['task_models']!=heads.hashes() for m in models):raise ValueError('matching frozen AR reference required')
+    out=Path(out);out.mkdir(parents=True,exist_ok=True)
+    evaluate(groups,heads,models,cfg,meta,out,trackeval_path)
+    receipt=dict(execution='fresh_frozen_reference_evaluation',task='ar',retrained=False,
+        checkpoint_sha256=[m.checkpoint_sha256 for m in models],state_sha256=[state_hash(m.state_dict()) for m in models],
+        reports_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in out.glob('*summary.json')})
+    write_json(out/'ar_reference_receipt.json',receipt);return receipt

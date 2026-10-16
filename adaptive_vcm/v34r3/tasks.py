@@ -35,8 +35,8 @@ class Heads(R2Heads):
         return super().prepare(source,task_mask(task),source_prefix)
 
     @torch.no_grad()
-    def source_score(self,rgb,source,*,prefix,package=None):
-        predictions={'od':self.detections(rgb)};probe=None
+    def source_score(self,rgb,source,*,prefix,package=None,detections=None):
+        predictions={'od':self.detections(rgb) if detections is None else detections};probe=None
         if source.task=='od':
             cost=detection_components(source.source_predictions['od'],predictions['od'])
             legacy=detection_distance(source.source_predictions['od'],predictions['od'])
