@@ -102,7 +102,9 @@ def run_records(groups,meta,cfg,out,origin,heads,task,package=None,*,stage='all'
         run_records(groups,meta,cfg,out/'final',origin,heads,task,package,stage='train-final',parent=training_parent,scope=scope)
         # Evaluate in the run root while retaining the enclosing all-stage receipt.
         _evaluate(groups,meta,cfg,out,heads,load_models(out/'final',cfg,heads,task,role='FINAL'),task,package,scope)
-    elif stage=='measure-identity':measure_stage(groups,meta,cfg,out,origin,heads,task,variant='identity',package=package,scope=scope)
+    elif stage=='measure-identity':
+        inherited=read(parent/'measurements.partial.json') if parent is not None else None
+        measure_stage(groups,meta,cfg,out,origin,heads,task,variant='identity',package=package,scope=scope,parent=inherited)
     elif stage=='train-warm':
         cache=_cache(parent/'measurements.json',cfg,heads,task,origin)
         if cache['variant']!='identity':raise ValueError('warm requires identity measurements')
@@ -110,7 +112,9 @@ def run_records(groups,meta,cfg,out,origin,heads,task,package=None,*,stage='all'
     elif stage=='measure-rollout':
         identity=_cache(parent/'identity_measurements.json',cfg,heads,task,origin)
         warm=load_models(parent,cfg,heads,task,role='WARM')
-        measure_stage(groups,meta,cfg,out,origin,heads,task,variant='rollout',warm_models=warm,package=package,scope=scope)
+        partial=parent/'recovery_measurements.partial.json'
+        inherited=read(partial) if partial.is_file() else None
+        measure_stage(groups,meta,cfg,out,origin,heads,task,variant='rollout',warm_models=warm,package=package,scope=scope,parent=inherited)
         write_json(out/'identity_measurements.json',identity)
     elif stage=='train-final':
         cache=_cache(parent/'measurements.json',cfg,heads,task,origin);caches=[cache]
