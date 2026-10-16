@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import subprocess
+import uuid
 from pathlib import Path
 import pytest
 from scripts import v34r3_workflow as flow
@@ -10,7 +11,7 @@ from tests.test_v34r3_payload import fixture_source
 
 
 class Client:
-    secrets=['private-key-for-fixture'];calls=[]
+    secrets=[uuid.uuid4().hex];calls=[]
     def __init__(self):self.calls=[]
     def safe(self,value):return str(value).replace(self.secrets[0],'[REDACTED]')
     def call(self,account,argv,timeout=45):
