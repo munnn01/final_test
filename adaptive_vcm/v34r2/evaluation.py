@@ -53,16 +53,28 @@ def shortlist(model,pair,c,qp,active,cfg,domain,kind,identifier):
 
 
 @torch.no_grad()
-def evaluate(groups,meta,cfg,out,heads,models,experiment,package,transfer_ar):
+def evaluate(groups,meta,cfg,out,heads,models,experiment,package,transfer_ar,*,
+             splits=('dev','test'),codecs=None,domains=None):
     task_models=heads.hashes()
     if any(m.metadata.get('settings')!=cfg or m.metadata.get('experiment')!=experiment or m.metadata.get('task_models')!=task_models for m in models):
         raise ValueError('R2 checkpoint/current settings, experiment or frozen heads mismatch')
-    for split in ('dev','test'):
+    codecs=tuple(cfg['codecs'] if codecs is None else codecs)
+    domains=tuple(('ar','od','ot') if domains is None else domains)
+    splits=tuple(splits)
+    for values,allowed in ((splits,('dev','test')),(codecs,cfg['codecs']),(domains,('ar','od','ot'))):
+        if not values or len(set(values))!=len(values) or not set(values).issubset(allowed):
+            raise ValueError('invalid evaluation execution scope')
+    report_cfg={**cfg,'codecs':list(codecs)}
+    write_json(out/'execution_scope.json',dict(experiment=experiment,splits=list(splits),codecs=list(codecs),domains=list(domains),
+        settings=cfg,task_models=task_models,checkpoint_sha256=[getattr(m,'checkpoint_sha256',None) for m in models],
+        source_ids={s:[r.id for r in groups[s] if r.task in domains] for s in splits}))
+    for split in splits:
+        records=[r for r in groups[split] if r.task in domains]
         rows=[]; clean={}; supports={}; prefixes={}; receivers={}; tracks={}; exhaustive=[]; gt_history={}
-        for index,r in enumerate(groups[split]):
+        for index,r in enumerate(records):
             source,maps=prepare_source(r,heads,experiment,cfg,clean,supports)
             pair=input_pair(r.rgb,maps); key=stream_key(r); gt_record=None; gt_context=None
-            for c in cfg['codecs']:
+            for c in codecs:
                 for qp in cfg['qps']:
                     codec=codec_factory(r.task,c,qp,cfg); packets={}; timing={}
                     def encode(action):
@@ -139,10 +151,10 @@ def evaluate(groups,meta,cfg,out,heads,models,experiment,package,transfer_ar):
                         rows.append(row)
             if gt_context is not None: gt_history[key]=gt_context[-cfg['context_frames']:]
             write_json(out/f'{split}_rows.partial.json',rows)
-            print(f'V34 R2 evaluate {split} {index+1}/{len(groups[split])}',flush=True)
+            print(f'V34 R2 evaluate {split} {index+1}/{len(records)}',flush=True)
         write_json(out/f'{split}_rows.json',rows)
-        summary=summarize(rows,groups[split],meta,cfg)
-        if tracks: summary.update(tracking_summary(tracks,rows,groups[split],meta,cfg,out/split,package))
+        summary=summarize(rows,records,meta,report_cfg)
+        if tracks: summary.update(tracking_summary(tracks,rows,records,meta,report_cfg,out/split,package))
         write_json(out/f'{split}_summary.json',summary)
         if exhaustive: write_json(out/'dev_exhaustive_source_guard.json',exhaustive)
 

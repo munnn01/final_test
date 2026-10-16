@@ -120,7 +120,7 @@ def train_models(cache,inputs,cfg,out,device,heads):
     return models
 
 
-def run_records(groups,meta,cfg,out,origin,heads,experiment,package=None,transfer_ar=None):
+def run_records(groups,meta,cfg,out,origin,heads,experiment,package=None,transfer_ar=None,*,inherited_cache=None,training_only=False):
     validate_origin(origin,verify_files=True)
     out=Path(out)
     if out.exists() and any(out.iterdir()): raise ValueError('immutable empty R2 output required')
@@ -139,25 +139,51 @@ def run_records(groups,meta,cfg,out,origin,heads,experiment,package=None,transfe
     write_json(out/'cohorts.json',sources); write_json(out/'origin.json',origin)
     cache=dict(schema=SCHEMA,experiment=experiment,settings=cfg,origin=origin,task_models=heads.hashes(),actions=[list(a) for a in ACTIONS],
         sources={k:v for k,v in sources.items() if v['split'] in ('train','cal')},rows=[])
+    inherited={}; replay_streams=set(); replay_count=0
+    if inherited_cache is not None:
+        from .continuation import validate_inherited,replay_identity
+        inherited=validate_inherited(inherited_cache,cfg,experiment,cache['task_models'],cache['sources'],origin)
+        cache['inherited_measurements']=dict(origin=inherited_cache['origin'],cache_digest=digest(inherited_cache),rows=len(inherited))
+        for split in ('train','cal'):
+            for r in groups[split]:
+                if task_mask(experiment,r.task,len(r.rgb))[2]:
+                    for c in cfg['codecs']:
+                        for q in cfg['qps']:
+                            if (r.id,c,q) not in inherited: replay_streams.add((split,stream_key(r),c,q))
     inputs={}
     for split in ('train','cal'):
         clean={}; supports={}; prefixes={}; gt_history={}
         for index,r in enumerate(groups[split]):
+            changed=False
             source,maps=prepare_source(r,heads,experiment,cfg,clean,supports)
             inputs[r.id]=input_pair(r.rgb,maps); key=stream_key(r)
             context=gt_history.get(key,[])+r.targets if r.task=='ot' else None
             for codec in cfg['codecs']:
                 for qp in cfg['qps']:
                     prefix=prefixes.setdefault((key,codec,qp),Prefix(context_frames=cfg['context_frames'])) if source.mask[2] else None
+                    prior=inherited.get((r.id,codec,qp))
+                    if prior is not None:
+                        if prefix is not None and (split,key,codec,qp) in replay_streams:
+                            replay_identity(source,maps,codec_factory(r.task,codec,qp,cfg),heads,cfg,prefix,prior)
+                            replay_count+=1
+                        cache['rows'].append(prior)
+                        continue
                     table=measure(r,source,maps,codec_factory(r.task,codec,qp,cfg),heads,cfg,prefix=prefix,gt_context=context,package=package)
                     cache['rows'].append(dict(id=r.id,group=key,split=split,domain=r.task,codec=codec,qp=qp,active=source.mask,
                         gt_mask=[int(r.task==t) for t in TASKS],condition=condition(codec,qp,source.mask,cfg,r.task),**table))
+                    changed=True
             if context is not None: gt_history[key]=context[-cfg['context_frames']:]
-            write_json(out/'measurements.partial.json',cache)
-            print(f'V34 R2 {experiment} measure {split} {index+1}/{len(groups[split])}',flush=True)
+            if changed: write_json(out/'measurements.partial.json',cache)
+            print(f'V34 R2 {experiment} {"measure" if changed else "reuse"} {split} {index+1}/{len(groups[split])}',flush=True)
     cache=seal(cache); validate_cache(cache); write_json(out/'measurements.json',cache)
     torch.save(inputs,out/'controller_inputs.pth')
     models=train_models(cache,inputs,cfg,out,heads.device,heads)
+    if training_only:
+        write_json(out/'stage_complete.json',dict(status='complete',stage='measure-train',experiment=experiment,
+            cache_sha256=cache['sha256'],checkpoint_sha256=[m.checkpoint_sha256 for m in models],
+            inherited_rows=len(inherited),new_rows=len(cache['rows'])-len(inherited),identity_prefix_replays=replay_count,
+            execution_origin=origin))
+        return models
     from .evaluation import evaluate
     evaluate(groups,meta,cfg,out,heads,models,experiment,package,transfer_ar)
     write_json(out/'complete.json',dict(status='complete',schema=SCHEMA,experiment=experiment,cache_sha256=cache['sha256'],
