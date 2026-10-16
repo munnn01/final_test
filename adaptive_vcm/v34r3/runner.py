@@ -23,8 +23,20 @@ def read(path):return json.loads(Path(path).read_text(encoding='utf-8'))
 def file_hash(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def load_models(parent,cfg,heads,task,*,role):
-    models=[load(Path(parent)/f'controller_{seed}.pth',task=task,recipe=cfg,task_models=heads.hashes(),device=heads.device) for seed in cfg['seeds']]
+def load_models(parent,cfg,heads,task,*,role,origin,groups=None,meta=None):
+    parent=Path(parent)
+    if not (parent/'training_lineage.json').is_file() or not (parent/'controller_inputs.pth').is_file():
+        raise ValueError(role+' checkpoint training lineage/input artifacts required')
+    lineage=read(parent/'training_lineage.json')
+    if (lineage.get('schema')!=SCHEMA or lineage.get('task')!=task or lineage.get('recipe_sha256')!=digest(cfg)
+        or lineage.get('origin')!=origin or read(parent/'stage.json').get('origin')!=origin
+        or lineage.get('inputs_sha256')!=file_hash(parent/'controller_inputs.pth')):
+        raise ValueError('current experiment origin/input training lineage mismatch')
+    if groups is not None:
+        actual=training_sources(groups,meta or {},task)
+        if any(actual.get(k)!=v for k,v in lineage['sources'].items()):
+            raise ValueError('current TRAIN/CAL source/annotation lineage differs from checkpoint')
+    models=[load(parent/f'controller_{seed}.pth',task=task,recipe=cfg,task_models=heads.hashes(),lineage=lineage,device=heads.device) for seed in cfg['seeds']]
     if any(m.metadata.get('checkpoint_role')!=role or m.metadata.get('seed')!=seed for m,seed in zip(models,cfg['seeds'])):
         raise ValueError(role+' checkpoints with exact seed order required')
     return models
@@ -40,7 +52,7 @@ def _cache(path,cfg,heads,task,origin):
     return value
 
 
-def train_models(caches,groups,cfg,out,heads,task,role,*,meta):
+def training_sources(groups,meta,task):
     actual=validate_cohorts(groups,meta.get('history',{}))['sources']
     annotations={}
     for a in meta.get('od',{}).get('annotations',[]):annotations.setdefault(a['image_id'],[]).append(a)
@@ -49,6 +61,11 @@ def train_models(caches,groups,cfg,out,heads,task,role,*,meta):
             if record.task!=task:continue
             annotation_hash=file_hash(Path(record.item['path'])/'gt/gt.txt') if task=='ot' else digest(annotations.get(record.item['image_id'],[]))
             actual[record.id]['annotation_sha256']=annotation_hash
+    return {k:v for k,v in actual.items() if v['split'] in ('train','cal') and v['domain']==task}
+
+
+def train_models(caches,groups,cfg,out,heads,task,role,*,meta):
+    actual=training_sources(groups,meta,task)
     for cache in caches:
         expected={key:actual.get(key) for key in cache['sources']}
         if expected!=cache['sources']:raise ValueError('current training source/annotation lineage differs from fixed targets')
@@ -65,22 +82,27 @@ def train_models(caches,groups,cfg,out,heads,task,role,*,meta):
             if any(row.get('map_sha256')!=map_sha for row in rows if row['id']==r.id):raise ValueError('current source map lineage differs from fixed targets')
             inputs[r.id]=input_pair(r.rgb,maps)
     torch.save(inputs,out/'controller_inputs.pth');models=[]
+    binding=dict(cache_sha256=caches[-1]['sha256'],prefix_policy_sha256=digest(dict(variant=caches[-1]['variant'],
+        warm_checkpoint_sha256=caches[-1].get('warm_checkpoint_sha256'),prefixes=[(r['id'],r['prefix_sha256'],r['prefix_after']) for r in cal]))) if role=='FINAL' else None
+    lineage=dict(schema=SCHEMA,task=task,recipe_sha256=digest(cfg),origin=caches[0]['origin'],cache_sha256=[c['sha256'] for c in caches],
+        inputs_sha256=file_hash(out/'controller_inputs.pth'),sources={k:actual[k] for k in ids},calibration_binding=binding)
+    write_json(out/'training_lineage.json',lineage)
     for seed in cfg['seeds']:
         np.random.seed(seed);torch.manual_seed(seed);model=Controller(13,9)
         history,scales=train(model,fit,inputs,cfg,device=heads.device)
         predictions=[predict(model,inputs[r['id']],r['codec'],r['qp'],cfg) for r in cal]
         calibration=calibrate(cal,predictions,cfg['cal_coverage'],recipe=cfg) if role=='FINAL' else None
         if calibration is not None:
-            calibration.update(cache_sha256=caches[-1]['sha256'],prefix_policy_sha256=digest(dict(variant=caches[-1]['variant'],
-                warm_checkpoint_sha256=caches[-1].get('warm_checkpoint_sha256'),prefixes=[(r['id'],r['prefix_sha256'],r['prefix_after']) for r in cal])))
+            calibration.update(binding)
         metadata=dict(task=task,recipe=cfg,task_models=heads.hashes(),risk_components=list(component_names(task)),component_mask=component_mask(task),
             seed=seed,checkpoint_role=role,calibration=calibration,history=history,scales=scales.tolist(),scales_fit_split='train',
             fixed_shortlist=fixed_shortlist(fit,cfg),cache_sha256=[c['sha256'] for c in caches],origin=caches[0]['origin'],
             inputs_sha256=file_hash(out/'controller_inputs.pth'),codec_backpropagation=False,
+            training_lineage_sha256=digest(lineage),
             seed_scope='optimization seeds share a frozen seed-303401 warm rollout measurement policy')
         save(out/f'controller_{seed}.pth',model,metadata);write_json(out/f'training_{seed}.json',metadata)
         if cal:write_json(out/f'cal_predictions_{seed}.json',[dict(id=r['id'],group=r['group'],codec=r['codec'],qp=r['qp'],**p) for r,p in zip(cal,predictions)])
-    return load_models(out,cfg,heads,task,role=role)
+    return load_models(out,cfg,heads,task,role=role,origin=caches[0]['origin'],groups=groups,meta=meta)
 
 
 def run_records(groups,meta,cfg,out,origin,heads,task,package=None,*,stage='all',parent=None,scope=None):
@@ -115,7 +137,7 @@ def run_records(groups,meta,cfg,out,origin,heads,task,package=None,*,stage='all'
             training_parent=out/'rollout'
         run_records(groups,meta,cfg,out/'final',origin,heads,task,package,stage='train-final',parent=training_parent,scope=scope)
         # Evaluate in the run root while retaining the enclosing all-stage receipt.
-        _evaluate(groups,meta,cfg,out,heads,load_models(out/'final',cfg,heads,task,role='FINAL'),task,package,scope)
+        _evaluate(groups,meta,cfg,out,heads,load_models(out/'final',cfg,heads,task,role='FINAL',origin=origin,groups=groups,meta=meta),task,package,scope)
     elif stage=='measure-identity':
         inherited=read(parent/'measurements.partial.json') if parent is not None else None
         measure_stage(groups,meta,cfg,out,origin,heads,task,variant='identity',package=package,scope=scope,parent=inherited)
@@ -125,7 +147,7 @@ def run_records(groups,meta,cfg,out,origin,heads,task,package=None,*,stage='all'
         train_models([cache],groups,cfg,out,heads,task,'WARM',meta=meta);write_json(out/'identity_measurements.json',cache)
     elif stage=='measure-rollout':
         identity=_cache(parent/'identity_measurements.json',cfg,heads,task,origin)
-        warm=load_models(parent,cfg,heads,task,role='WARM')
+        warm=load_models(parent,cfg,heads,task,role='WARM',origin=origin,groups=groups,meta=meta)
         partial=parent/'recovery_measurements.partial.json'
         inherited=read(partial) if partial.is_file() else None
         measure_stage(groups,meta,cfg,out,origin,heads,task,variant='rollout',warm_models=warm,package=package,scope=scope,parent=inherited)
@@ -137,8 +159,9 @@ def run_records(groups,meta,cfg,out,origin,heads,task,package=None,*,stage='all'
             identity=_cache(parent/'identity_measurements.json',cfg,heads,task,origin);caches=[identity,cache]
         train_models(caches,groups,cfg,out,heads,task,'FINAL',meta=meta)
     else:
-        models=load_models(parent,cfg,heads,task,role='FINAL')
+        models=load_models(parent,cfg,heads,task,role='FINAL',origin=origin,groups=groups,meta=meta)
         for seed in cfg['seeds']:shutil.copyfile(parent/f'controller_{seed}.pth',out/f'controller_{seed}.pth')
+        for name in ('training_lineage.json','controller_inputs.pth'):shutil.copyfile(parent/name,out/name)
         if (parent/'locked_policy.json').is_file():shutil.copyfile(parent/'locked_policy.json',out/'locked_policy.json')
         _evaluate(groups,meta,cfg,out,heads,models,task,package,scope)
     files={p.relative_to(out).as_posix():file_hash(p) for p in out.rglob('*') if p.is_file() and p.name!='stage_complete.json' and not p.name.endswith('.partial.json')}

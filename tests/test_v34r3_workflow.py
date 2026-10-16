@@ -25,9 +25,12 @@ class Client:
 
 def plan(tmp_path,monkeypatch):
     from scripts import v34r3_kaggle as payload
-    monkeypatch.setattr(payload,'source_snapshot',fixture_source)
     monkeypatch.setattr(flow,'owner_capacity',lambda client,account:dict(hours=30,active=['r2/existing']))
     commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
+    def pinned_source():
+        bundle,origin,other=fixture_source();origin['origin_commit']=commit
+        return bundle,origin,other
+    monkeypatch.setattr(payload,'source_snapshot',pinned_source)
     return dict(root=str(tmp_path),source_commit=commit,config_sha256=hashlib.sha256((ROOT/'configs/v34_r3_qp4.json').read_bytes()).hexdigest(),
         jobs=[dict(id='od-identity',task='od',account='thuha1205',stage='measure-identity',depends=[],scope=None,estimated_gpu_hours=4)])
 

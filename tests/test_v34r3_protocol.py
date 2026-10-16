@@ -7,6 +7,7 @@ from adaptive_vcm.v34.model import Controller as NativeController
 from adaptive_vcm.v34r3.model import Controller
 from adaptive_vcm.v34r3.protocol import (settings, recipe, component_names, task_mask,
                                        component_mask, baseline_manifest, verify_baseline)
+from adaptive_vcm.v34r3.protocol import digest
 from adaptive_vcm.v34r3.checkpoint import save, load
 
 
@@ -44,21 +45,24 @@ def metadata(task='od'):
     return dict(task=task, recipe=recipe(settings(),task,'train-final'),
                 risk_components=list(component_names(task)), component_mask=[1,1,1],
                 task_models={'od': {'name':'fixture','state_sha256':'a'*64}},
-                checkpoint_role='FINAL', seed=303401)
+                checkpoint_role='WARM', seed=303401,**lineage(),training_lineage_sha256=digest(lineage()))
+
+
+def lineage():return dict(origin={'origin_commit':'a'*40,'bundle_sha256':'b'*64},cache_sha256=['c'*64],inputs_sha256='d'*64)
 
 
 def test_shape_compatible_wrong_task_or_metric_checkpoint_is_rejected(tmp_path):
     m=Controller(13,conditions=9); meta=metadata(); p=tmp_path/'model.pth'
     save(p,m,meta)
-    restored=load(p,task='od',recipe=meta['recipe'],task_models=meta['task_models'])
+    restored=load(p,task='od',recipe=meta['recipe'],task_models=meta['task_models'],lineage=lineage())
     assert all(torch.equal(v,restored.state_dict()[k]) for k,v in m.state_dict().items())
-    with pytest.raises(ValueError): load(p,task='ot',recipe=meta['recipe'],task_models=meta['task_models'])
+    with pytest.raises(ValueError): load(p,task='ot',recipe=meta['recipe'],task_models=meta['task_models'],lineage=lineage())
     bad=copy.deepcopy(meta); bad['risk_components']=['fp','fn','localization']; save(p,m,bad)
-    with pytest.raises(ValueError): load(p,task='od',recipe=meta['recipe'],task_models=meta['task_models'])
+    with pytest.raises(ValueError): load(p,task='od',recipe=meta['recipe'],task_models=meta['task_models'],lineage=lineage())
     save(p,m,meta); changed=copy.deepcopy(meta['recipe']); changed['gt_limits']=[.05]*3
-    with pytest.raises(ValueError): load(p,task='od',recipe=changed,task_models=meta['task_models'])
+    with pytest.raises(ValueError): load(p,task='od',recipe=changed,task_models=meta['task_models'],lineage=lineage())
     value=torch.load(p,weights_only=True); value['metadata']['seed']=0; torch.save(value,p)
-    with pytest.raises(ValueError): load(p,task='od',recipe=meta['recipe'],task_models=meta['task_models'])
+    with pytest.raises(ValueError): load(p,task='od',recipe=meta['recipe'],task_models=meta['task_models'],lineage=lineage())
 
 
 def test_baseline_manifest_checks_transitive_code_without_git_at_runtime(tmp_path):

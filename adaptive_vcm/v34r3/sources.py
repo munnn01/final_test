@@ -1,5 +1,7 @@
 """Pinned standalone cohorts and independent source/camera identities."""
 import hashlib
+import configparser
+from fractions import Fraction
 import json
 from pathlib import Path
 import re
@@ -7,12 +9,31 @@ from .protocol import digest
 from ..v33ap.sources import SourceRecord,read_source
 from ..v34.sources import cohorts
 from ..v32vc.train import od_targets
-from ..v32.tracking import plan_sequences,read_sequence
+from ..v32.tracking import read_sequence
+
+
+def camera_id(sequence):return re.sub(r'-(DPM|FRCNN|SDP)$','',sequence)
 
 
 def group_id(record):
     sequence=record.item.get('sequence')
-    return re.sub(r'-(DPM|FRCNN|SDP)$','',sequence) if sequence else record.id
+    return camera_id(sequence) if sequence else record.id
+
+
+def plan_sequence(root,name,frames):
+    """R3 local mounts retain official sequence names and original FPS metadata."""
+    if not re.fullmatch(r'MOT(?:17|20)-\d{2}(?:-(?:DPM|FRCNN|SDP))?',name) or frames<1:
+        raise ValueError('explicit MOT17/MOT20 sequence and positive frame scope required')
+    path=Path(root)/name;parser=configparser.ConfigParser()
+    if not parser.read(path/'seqinfo.ini'):raise FileNotFoundError('missing MOT seqinfo.ini')
+    seq=parser['Sequence'];total,width,height=(int(seq[k]) for k in ('seqLength','imWidth','imHeight'))
+    fps=Fraction(seq['frameRate'])
+    if (min(total,width,height)<1 or fps<=0 or seq['name']!=name or seq['imDir']!='img1' or seq['imExt']!='.jpg'):
+        raise ValueError('invalid MOT sequence metadata')
+    images=[path/'img1'/f'{n:06}.jpg' for n in range(1,min(frames,total)+1)]
+    for file in [*images,path/'gt/gt.txt']:
+        if not file.is_file():raise FileNotFoundError('missing MOT file: '+str(file))
+    return dict(name=name,path=path,images=images,frames=len(images),full_frames=total,width=width,height=height,fps=fps)
 
 
 def validate_cohorts(groups,history):
@@ -67,10 +88,10 @@ def load_groups(args,recipe):
         if set(sequence_splits)!=set(groups):raise ValueError('all OT sequence splits required')
         for split,names in sequence_splits.items():
             for name in names:
-                canonical=re.sub(r'-(DPM|FRCNN|SDP)$','',name)
+                canonical=camera_id(name)
                 if canonical in seen:raise ValueError('duplicate camera in OT splits')
                 seen.add(canonical)
-                item=plan_sequences(Path(args.mot_root),[name],cfg['ot_frames'])[0]
+                item=plan_sequence(Path(args.mot_root),name,cfg['ot_frames'])
                 if item['frames']!=cfg['ot_frames'] or item['frames']%cfg['frames']:raise ValueError('complete contiguous windows required')
                 rgb,geometry=read_sequence(item,cfg['ot_size']);plans.append(item)
                 for offset in range(0,len(rgb),cfg['frames']):

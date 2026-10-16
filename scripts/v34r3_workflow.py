@@ -192,10 +192,15 @@ def step(plan,state,client):
             capacity=capacities[j['account']]
             if len(capacity['active'])>=2 or capacity['hours']<j['estimated_gpu_hours']:continue
             parent=_parent(plan,state,j,client)
-            if j['depends'] and parent is None:continue
             previous=state['jobs'].get(j['id'],{});attempt=previous.get('attempt',1)
+            if (j['depends'] or previous.get('recoverable_parent')) and parent is None:continue
             directory=root/'payloads'/(j['id'] if attempt==1 else j['id']+'-resume-'+str(attempt))
             if not directory.exists():payload.prepare(j['task'],j['account'],directory,stage=j['stage'],parent=parent,scope=j.get('scope'),cohort_manifest=plan.get('cohort_manifest'))
+            job=read(directory/'job.json');origin=read(directory/'origin-manifest.json')
+            expected=payload.job_spec(j['task'],j['account'],origin,stage=j['stage'],parent=parent,
+                scope=j.get('scope'),cohort_manifest=plan.get('cohort_manifest'))
+            if job!=expected or origin['origin_commit']!=plan['source_commit']:
+                raise ValueError('prepared payload parent/task/stage/scope/source differs from workflow')
             def persist(value):
                 state['jobs'][j['id']]={**previous,**value};save(root/'state.json',redact(state,client))
             item={**previous,**submit(client,directory,persist)};state['jobs'][j['id']]=item;save(root/'state.json',redact(state,client))

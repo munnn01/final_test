@@ -57,7 +57,7 @@ def test_ot_two_window_rollout_resume_and_official_metrics(tmp_path):
     run_records(groups,meta,cfg,tmp_path/'run',origin(),h,'ot',package)
     cache=json.loads((tmp_path/'run/rollout/measurements.json').read_text())
     from adaptive_vcm.v34r3.measurement import measure_stage
-    warm=load_models(tmp_path/'run/warm',cfg,h,'ot',role='WARM')
+    warm=load_models(tmp_path/'run/warm',cfg,h,'ot',role='WARM',origin=origin())
     restarted=measure_stage(groups,meta,cfg,tmp_path/'resume',origin(),h,'ot',variant='rollout',warm_models=warm,parent=cache,package=package)
     assert restarted['reused_rows']==4
     summary=json.loads((tmp_path/'run/test_summary.json').read_text())
@@ -72,7 +72,7 @@ def test_final_evaluation_rejects_warm_checkpoint(tmp_path):
     cfg=tiny_recipe('od');h=make_heads('od',cfg);tmp_path.mkdir(exist_ok=True)
     for seed in cfg['seeds']:
         save(tmp_path/f'controller_{seed}.pth',Controller(13,9),dict(task='od',recipe=cfg,task_models=h.hashes(),risk_components=list(component_names('od')),component_mask=component_mask('od'),seed=seed,checkpoint_role='WARM'))
-    with pytest.raises(ValueError,match='FINAL'):load_models(tmp_path,cfg,h,'od',role='FINAL')
+    with pytest.raises(ValueError,match='FINAL'):load_models(tmp_path,cfg,h,'od',role='FINAL',origin=origin())
 
 
 @pytest.mark.parametrize('change',['pixels','annotations','geometry'])
@@ -100,7 +100,7 @@ def test_heldout_gt_sentinel_is_read_only_after_selection_commit(tmp_path,monkey
         def __getitem__(self,key):
             if key=='annotations':assert selected,'held-out GT read before selection'
             return super().__getitem__(key)
-    meta['od']=Guarded(meta['od']);models=load_models(tmp_path/'final',cfg,h,'od',role='FINAL')
+    meta['od']=Guarded(meta['od']);models=load_models(tmp_path/'final',cfg,h,'od',role='FINAL',origin=origin())
     evaluation.evaluate(groups,meta,cfg,tmp_path/'eval',h,models,'od',None,splits=('dev',),policies=[dict(risk_gate=True)])
 
 

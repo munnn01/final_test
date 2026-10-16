@@ -8,7 +8,7 @@ from .protocol import ACTIONS,codec_factory,digest,task_mask
 from .measurement import prepare_source
 from .selection import choose,shortlist
 from .metrics import compare
-from .sources import group_id
+from .sources import group_id,camera_id
 from ..v34.preprocessing import filter_clip
 from ..v34.runner import input_pair,write_json,infer
 from ..v34r2.runner import condition
@@ -34,13 +34,13 @@ def promotion(report,cohort_manifest,calibration):
 def tracking_summary(tracks,rows,records,meta,cfg,out,package):
     from ..v32.tracking import write_mot,stage_ground_truth,TRACKEVAL_COMMIT,json_safe
     out=Path(out);out.mkdir(parents=True,exist_ok=True)
-    plan=[p for p in meta['ot'] if p['name'] in {group_id(r) for r in records}]
+    plan=[p for p in meta['ot'] if camera_id(p['name']) in {group_id(r) for r in records}]
     benchmarks={p['name'].split('-')[0] for p in plan}
     if len(benchmarks)!=1 or not benchmarks<={'MOT17','MOT20'}:raise ValueError('one explicit MOT benchmark per evaluation required')
     names=set()
     for (c,q,arm,seq),frames in tracks.items():
         name=f'{c}_{q}_{arm}';names.add(name);r=next(r for r in records if group_id(r)==seq)
-        write_mot(out/'trackers'/name/'data'/(seq+'.txt'),frames,r.geometry,r.item['width'],r.item['height'])
+        write_mot(out/'trackers'/name/'data'/(r.item['sequence']+'.txt'),frames,r.geometry,r.item['width'],r.item['height'])
     write_json(out/'ground_truth_provenance.json',stage_ground_truth(plan,out/'ground_truth'))
     dataset=package.datasets.MotChallenge2DBox(dict(GT_FOLDER=str(out/'ground_truth'),TRACKERS_FOLDER=str(out/'trackers'),
         OUTPUT_FOLDER=str(out/'official_metrics'),TRACKERS_TO_EVAL=sorted(names),BENCHMARK=next(iter(benchmarks)),
@@ -109,6 +109,7 @@ def evaluate(groups,meta,cfg,out,heads,models,task,package,*,splits=('dev','test
                         begin=time.perf_counter()
                         if arm=='anchor':
                             action=0;packet=encode(0);value=score(packet.decoded)
+                            identity_value=value
                             if prefix is not None:prefix.commit(value['probe'])
                             audit=dict(tried_actions=[0],guard_seconds=0);selector_seconds=0
                         else:
@@ -116,12 +117,13 @@ def evaluate(groups,meta,cfg,out,heads,models,task,package,*,splits=('dev','test
                             rng=np.random.default_rng(int(digest([model.metadata['seed'],r.id,c,q])[:16],16))
                             actions=shortlist(prediction,cfg,kind,fixed=model.metadata['fixed_shortlist'],rng=rng)
                             selector_seconds=time.perf_counter()-begin
-                            costs=[]
+                            costs=[];probes=[]
                             def scored(rgb):
-                                value=score(rgb);costs.append(value['representative_guard_seconds']);return value
+                                value=score(rgb);probes.append(value);costs.append(value['representative_guard_seconds']);return value
                             action,packet,value,audit=choose(actions,encode,scored,
                                 task=task,recipe=cfg,prediction=prediction,calibration=model.metadata.get('calibration'),prefix=prefix,policy=policy)
                             audit['actual_cached_guard_seconds']=audit['guard_seconds'];audit['guard_seconds']=sum(costs)
+                            identity_value=probes[0]
                         # Independent receiver consumes only the packet selected above.
                         detections,inference_seconds=frozen_predictions(packet.decoded,receiver_predictions);begin=time.perf_counter()
                         receiver_tracks=None
@@ -140,7 +142,7 @@ def evaluate(groups,meta,cfg,out,heads,models,task,package,*,splits=('dev','test
                                 sum(sum(times[a][k] for k in ('preprocess_seconds','encode_seconds','decode_seconds','inverse_seconds')) for a in tried),
                             timing_scope='representative uncached probe/receiver inference work; identical-pixel frozen predictions are memoized across experimental arms; actual cached guard time is separate')
                         rows.append(row)
-                        offline.append((row,packet,value))
+                        offline.append((row,packet,value,encode(0),identity_value))
             # All decisions for this source have committed before any label read.
             if task=='od':
                 annotations=[a for a in meta['od']['annotations'] if a['image_id']==r.item['image_id']];context=None
@@ -149,14 +151,17 @@ def evaluate(groups,meta,cfg,out,heads,models,task,package,*,splits=('dev','test
                 annotations=None;context=gt_history.get(key,[])+read_context(Path(r.item['path'])/'gt/gt.txt',r.item['start'],r.item['start']+len(r.rgb))
                 gt_history[key]=context[-cfg['context_frames']:]
             anchors={};cost_cache={}
-            for row,packet,value in offline:
+            def offline_cost(packet,value):
                 cachekey=(packet.packet_sha256,getattr(value.get('probe'),'signature',None))
                 if cachekey not in cost_cache:
                     cost_cache[cachekey]=heads.gt_score(packet.decoded,source,annotations=annotations,context=context,package=package,source_result=value)['gt_cost']
-                cost=np.asarray(cost_cache[cachekey],float);condition_key=(row['codec'],row['qp'])
+                return np.asarray(cost_cache[cachekey],float)
+            for row,packet,value,identity_packet,identity_value in offline:
+                cost=offline_cost(packet,value);identity_cost=offline_cost(identity_packet,identity_value);condition_key=(row['codec'],row['qp'])
                 if row['arm']=='anchor':anchors[condition_key]=cost
-                delta=cost-anchors[condition_key];row['offline_gt_cost']=cost.tolist();row['offline_gt_damage']=delta.tolist()
-                row['offline_gt_scope']='post-selection component diagnostics; not final cohort accuracy'
+                delta=cost-identity_cost;row['offline_gt_cost']=cost.tolist();row['offline_gt_damage']=delta.tolist()
+                row['offline_identity_cost']=identity_cost.tolist();row['offline_anchor_stream_damage']=(cost-anchors[condition_key]).tolist()
+                row['offline_gt_scope']='post-selection candidate minus identity probe on the same arm prefix; anchor stream delta reported separately; not final cohort accuracy'
                 if 'predicted_gt_damage' in row:row['risk_prediction_error']=(delta-row['predicted_gt_damage']).tolist()
             write_json(out/f'{split}_rows.partial.json',rows)
             print(f'V34 R3 {task} evaluate {split} {index+1}/{len(records)}',flush=True)
