@@ -30,5 +30,8 @@ def compare(anchor,adaptive,*,task):
     if result['interpolation_sensitive']:reasons.append('cubic overshoot/negative derivative or cubic-PCHIP disagreement >5 percentage points')
     reliable=not reasons and cubic is not None
     result.update(bd_reliable=reliable,diagnostic_policy='predeclared 5-percentage-point engineering sensitivity check')
-    if not reliable:result.update(bd_rate_pct=None,bd_quality_pp=None,point_passes=False,screen_passes=False,invalid_reason='; '.join(dict.fromkeys(reasons)))
+    if not reliable:
+        result.update(bd_rate_pct=None,bd_quality_pp=None,point_passes=False,screen_passes=False,invalid_reason='; '.join(dict.fromkeys(reasons)))
+        for name in result.get('guards',{}):
+            if name.startswith(('canonical_bd','pchip_bd','bd_quality')):result['guards'][name]=False
     return result

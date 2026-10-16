@@ -25,7 +25,8 @@ def validate_cohorts(groups,history):
             if group in assigned and assigned[group]!=split:raise ValueError('sequence/camera split leakage')
             assigned[group]=split;pixels.add(sha)
             sources[r.id]=dict(split=split,domain=r.task,group=group,pixel_sha256=sha,
-                frames=len(r.rgb),frame_recipe=r.frame_recipe)
+                frames=len(r.rgb),frame_recipe=r.frame_recipe,geometry=list(r.geometry),
+                source_metadata={k:r.item[k] for k in ('sequence','start','width','height','image_id') if k in r.item})
     known_ids=set(history.get('ids',[]));known_pixels=set(history.get('pixels',[]));known_groups=set(history.get('groups',[]))
     seen=[key for key,s in sources.items() if s['split']=='test' and
           (key in known_ids or s['pixel_sha256'] in known_pixels or s['group'] in known_groups)]

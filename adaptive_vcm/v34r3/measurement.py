@@ -179,6 +179,8 @@ def measure_stage(groups,meta,cfg,out,origin,heads,task,*,variant,warm_models=No
                             if prefix.signature!=old['prefix_sha256']:raise ValueError('resumed prefix starts from different history')
                             action=old['selected_action'];packet=codec.roundtrip(filter_clip(r.rgb,maps,ACTIONS[action]),source_shape=r.rgb.shape,task=task)
                             if packet.packet_sha256!=old['packets'][action]['sha256']:raise ValueError('resumed selected packet changed')
+                            if hashlib.sha256(packet.decoded.tobytes()).hexdigest()!=old['packets'][action]['decoded_sha256']:
+                                raise ValueError('resumed decoded pixels changed')
                             result=heads.source_score(packet.decoded,source,prefix=prefix,package=package);prefix.commit(result['probe'])
                             if prefix.signature!=old['prefix_after']:raise ValueError('resumed tracker commit changed')
                         cache['rows'].append(old);reused+=1;continue

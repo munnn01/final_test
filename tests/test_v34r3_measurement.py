@@ -147,3 +147,21 @@ def test_support_scene_cut_context_cap_and_reentry_use_causal_history(tmp_path):
     third=copy.deepcopy(rs[1]);third.item['start']=33;third.id='ot/MOT20-02/000033'
     measurement.prepare_source(third,h,'ot',cfg,clean,supports)
     assert 999 not in supports['MOT20-02'].tracks
+
+
+@pytest.mark.codec
+def test_replay_rejects_decoder_drift_even_with_identical_packet_and_predictions(tmp_path,monkeypatch):
+    from dataclasses import replace
+    cfg=tiny_recipe();rs=records(tmp_path/'data');groups=dict(train=rs,cal=[],dev=[],test=[])
+    package=load_trackeval(os.environ['V34_TRACKEVAL']);h=make_heads('ot',cfg)
+    cache=measurement.measure_stage(groups,{},cfg,tmp_path/'first',origin(),h,'ot',variant='identity',package=package)
+    factory=measurement.codec_factory
+    class Drift:
+        def __init__(self,codec):self.codec=codec
+        def roundtrip(self,*a,**k):
+            packet=self.codec.roundtrip(*a,**k)
+            return replace(packet,decoded=packet.decoded^1)
+        def __getattr__(self,key):return getattr(self.codec,key)
+    monkeypatch.setattr(measurement,'codec_factory',lambda *a,**k:Drift(factory(*a,**k)))
+    with pytest.raises(ValueError,match='decoded|decoder'):
+        measurement.measure_stage(groups,{},cfg,tmp_path/'resume',origin(),h,'ot',variant='identity',package=package,parent=cache)

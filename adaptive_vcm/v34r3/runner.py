@@ -40,7 +40,18 @@ def _cache(path,cfg,heads,task,origin):
     return value
 
 
-def train_models(caches,groups,cfg,out,heads,task,role):
+def train_models(caches,groups,cfg,out,heads,task,role,*,meta):
+    actual=validate_cohorts(groups,meta.get('history',{}))['sources']
+    annotations={}
+    for a in meta.get('od',{}).get('annotations',[]):annotations.setdefault(a['image_id'],[]).append(a)
+    for split in ('train','cal'):
+        for record in groups[split]:
+            if record.task!=task:continue
+            annotation_hash=file_hash(Path(record.item['path'])/'gt/gt.txt') if task=='ot' else digest(annotations.get(record.item['image_id'],[]))
+            actual[record.id]['annotation_sha256']=annotation_hash
+    for cache in caches:
+        expected={key:actual.get(key) for key in cache['sources']}
+        if expected!=cache['sources']:raise ValueError('current training source/annotation lineage differs from fixed targets')
     rows=[r for cache in caches for r in cache['rows']];fit=[r for r in rows if r['split']=='train']
     cal=[r for r in caches[-1]['rows'] if r['split']=='cal'];inputs={}
     if not fit or role=='FINAL' and not cal:raise ValueError('TRAIN and FINAL CAL are required')
@@ -49,7 +60,10 @@ def train_models(caches,groups,cfg,out,heads,task,role):
         clean={};supports={}
         for r in groups[split]:
             if r.id not in ids:continue
-            source,maps=prepare_source(r,heads,task,cfg,clean,supports);inputs[r.id]=input_pair(r.rgb,maps)
+            source,maps=prepare_source(r,heads,task,cfg,clean,supports)
+            map_sha=hashlib.sha256(maps.tobytes()).hexdigest()
+            if any(row.get('map_sha256')!=map_sha for row in rows if row['id']==r.id):raise ValueError('current source map lineage differs from fixed targets')
+            inputs[r.id]=input_pair(r.rgb,maps)
     torch.save(inputs,out/'controller_inputs.pth');models=[]
     for seed in cfg['seeds']:
         np.random.seed(seed);torch.manual_seed(seed);model=Controller(13,9)
@@ -108,7 +122,7 @@ def run_records(groups,meta,cfg,out,origin,heads,task,package=None,*,stage='all'
     elif stage=='train-warm':
         cache=_cache(parent/'measurements.json',cfg,heads,task,origin)
         if cache['variant']!='identity':raise ValueError('warm requires identity measurements')
-        train_models([cache],groups,cfg,out,heads,task,'WARM');write_json(out/'identity_measurements.json',cache)
+        train_models([cache],groups,cfg,out,heads,task,'WARM',meta=meta);write_json(out/'identity_measurements.json',cache)
     elif stage=='measure-rollout':
         identity=_cache(parent/'identity_measurements.json',cfg,heads,task,origin)
         warm=load_models(parent,cfg,heads,task,role='WARM')
@@ -121,7 +135,7 @@ def run_records(groups,meta,cfg,out,origin,heads,task,package=None,*,stage='all'
         if task=='ot':
             if cache['variant']!='rollout':raise ValueError('OT FINAL requires measured rollout CAL')
             identity=_cache(parent/'identity_measurements.json',cfg,heads,task,origin);caches=[identity,cache]
-        train_models(caches,groups,cfg,out,heads,task,'FINAL')
+        train_models(caches,groups,cfg,out,heads,task,'FINAL',meta=meta)
     else:
         models=load_models(parent,cfg,heads,task,role='FINAL')
         for seed in cfg['seeds']:shutil.copyfile(parent/f'controller_{seed}.pth',out/f'controller_{seed}.pth')

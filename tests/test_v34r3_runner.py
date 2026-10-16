@@ -75,6 +75,18 @@ def test_final_evaluation_rejects_warm_checkpoint(tmp_path):
     with pytest.raises(ValueError,match='FINAL'):load_models(tmp_path,cfg,h,'od',role='FINAL')
 
 
+@pytest.mark.parametrize('change',['pixels','annotations','geometry'])
+@pytest.mark.codec
+def test_training_rejects_changed_sources_or_annotations(tmp_path,change):
+    cfg=tiny_recipe('od');groups,meta=od_groups();h=make_heads('od',cfg)
+    run_records(groups,meta,cfg,tmp_path/'measure',origin(),h,'od',stage='measure-identity')
+    if change=='pixels':groups['train'][0].rgb^=1
+    elif change=='annotations':meta['od']['annotations'][0]['bbox'][0]+=1
+    else:groups['train'][0].geometry=(2,2,0,0)
+    with pytest.raises(ValueError,match='source|annotation|lineage'):
+        run_records(groups,meta,cfg,tmp_path/'final',origin(),h,'od',stage='train-final',parent=tmp_path/'measure')
+
+
 @pytest.mark.codec
 def test_heldout_gt_sentinel_is_read_only_after_selection_commit(tmp_path,monkeypatch):
     cfg=tiny_recipe('od');groups,meta=od_groups();h=make_heads('od',cfg)

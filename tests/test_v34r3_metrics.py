@@ -11,6 +11,7 @@ def test_nonmonotone_and_cubic_unstable_curves_clear_reliability():
     a=dict(bpp=[1,2,3,4],quality=[.1,.11,.12,.9])
     result=compare(a,dict(bpp=[.9,1.8,2.7,3.6],quality=a['quality']),task='od')
     assert result['interpolation_sensitive'] and not result['bd_reliable']
+    assert not any(v for k,v in result.get('guards',{}).items() if k.startswith(('canonical_bd','pchip_bd','bd_quality')))
     a=dict(bpp=[1,2,3,4],quality=[.2,.4,.6,.8])
     result=compare(a,dict(bpp=[.9,1.8,2.7,3.6],quality=a['quality']),task='od')
     assert result['bd_reliable'] and abs(result['bd_rate_pct']+10)<1e-6
